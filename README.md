@@ -163,7 +163,7 @@ This is an early public release package. The core workflow is usable, but the pr
 - It is Windows-first.
 - It uses rule-based text polishing, not full semantic LLM rewriting.
 - It relies on clipboard/focus automation for input refill, because Codex does not currently expose a stable public composer write API.
-- The license is currently an all-rights-reserved placeholder. Replace `LICENSE` with an explicit open-source license before treating this as an open-source project.
+- The project is licensed under Apache-2.0.
 
 ## Roadmap
 
@@ -198,4 +198,4 @@ Start with:
 
 ## License
 
-The current `LICENSE` is a conservative all-rights-reserved placeholder. Before public open-source collaboration, choose and replace it with a formal license such as MIT, Apache-2.0, GPL, or another license appropriate for the project.
+Licensed under the [Apache License 2.0](LICENSE).

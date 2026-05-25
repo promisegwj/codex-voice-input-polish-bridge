@@ -34,7 +34,7 @@ dotnet build ".\tools\TypeWhisperT2S\TypeWhisperT2S.csproj" -c Release
 
 ## Publishing
 
-- [ ] Decide whether to keep `LICENSE` as all-rights-reserved or replace it with an open-source license.
+- [ ] Confirm `LICENSE` is Apache-2.0 and README links to it.
 - [ ] Update `CHANGELOG.md`.
 - [ ] Create a commit.
 - [ ] Add remote.

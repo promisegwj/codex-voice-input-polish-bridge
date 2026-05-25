@@ -22,6 +22,6 @@
 ## Before Publishing
 
 1. Review `config/voice-feedback-settings.json`; keep learning and auto-apply disabled for public defaults.
-2. Choose whether to keep the conservative `LICENSE` or replace it with an open-source license.
+2. Confirm `LICENSE` remains Apache-2.0 and README links to it.
 3. Run `git status --short` inside this directory and confirm only intended files are tracked.
 4. Build from source if you need a release binary; do not commit generated publish output unless you intentionally attach it to a GitHub Release artifact.
