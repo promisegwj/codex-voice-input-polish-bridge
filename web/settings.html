@@ -1,0 +1,1817 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Codex 语音输入校准设置</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f7f9;
+      --panel: #ffffff;
+      --text: #17202a;
+      --muted: #64717f;
+      --line: #d8dee6;
+      --accent: #0b6fcb;
+      --accent-dark: #075da9;
+      --ok: #147a3f;
+      --warn: #8a5a00;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font-family: "Microsoft YaHei UI", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.5;
+    }
+
+    main {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 18px;
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 20px;
+      font-weight: 650;
+    }
+
+    header p {
+      margin-top: 4px;
+    }
+
+    .header-actions {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .status {
+      min-width: 120px;
+      color: var(--muted);
+      font-size: 13px;
+      text-align: right;
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px;
+      margin-bottom: 14px;
+    }
+
+    .panel-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 10px;
+    }
+
+    h2 {
+      margin: 0;
+      font-size: 16px;
+      font-weight: 650;
+    }
+
+    h3 {
+      margin: 0 0 6px;
+      font-size: 14px;
+      font-weight: 650;
+    }
+
+    p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .setting-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 14px;
+      align-items: center;
+      padding: 10px 0;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .setting-row:last-child {
+      border-bottom: 0;
+    }
+
+    label.switch {
+      position: relative;
+      display: inline-block;
+      width: 52px;
+      height: 30px;
+    }
+
+    label.switch input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+
+    .slider {
+      position: absolute;
+      cursor: pointer;
+      inset: 0;
+      background: #b8c2ce;
+      border-radius: 999px;
+      transition: background 0.18s ease;
+    }
+
+    .slider::before {
+      content: "";
+      position: absolute;
+      width: 24px;
+      height: 24px;
+      left: 3px;
+      top: 3px;
+      background: #fff;
+      border-radius: 50%;
+      transition: transform 0.18s ease;
+      box-shadow: 0 1px 4px rgba(0, 0, 0, 0.22);
+    }
+
+    input:checked + .slider {
+      background: var(--accent);
+    }
+
+    input:checked + .slider::before {
+      transform: translateX(22px);
+    }
+
+    input:focus-visible + .slider,
+    button:focus-visible,
+    select:focus-visible,
+    textarea:focus-visible,
+    input[type="time"]:focus-visible,
+    input[type="number"]:focus-visible,
+    input[type="text"]:focus-visible {
+      outline: 2px solid rgba(11, 111, 203, 0.25);
+      outline-offset: 2px;
+    }
+
+    .field {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      justify-content: flex-end;
+      flex-wrap: wrap;
+    }
+
+    input[type="time"],
+    input[type="number"],
+    input[type="text"],
+    select {
+      min-height: 34px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 4px 8px;
+      color: var(--text);
+      background: #fff;
+      font: inherit;
+    }
+
+    input[readonly] {
+      background: #fafbfc;
+      color: #26313d;
+    }
+
+    input:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+    }
+
+    select {
+      min-width: min(520px, 100%);
+    }
+
+    .topic-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 12px;
+    }
+
+    .topic-card,
+    .notice {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      background: #fbfcfd;
+    }
+
+    .flow-controls {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 10px;
+    }
+
+    .delay-control {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .delay-control input {
+      width: 76px;
+    }
+
+    .primary-flow {
+      border: 1px solid #b7d7ee;
+      background: #f6fbff;
+      border-radius: 8px;
+      padding: 12px;
+      margin-top: 10px;
+    }
+
+    .primary-flow p,
+    .backup-tools p {
+      margin: 6px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.55;
+    }
+
+    .backup-tools {
+      margin-top: 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      padding: 10px 12px;
+    }
+
+    .backup-tools summary {
+      cursor: pointer;
+      color: var(--text);
+      font-weight: 600;
+    }
+
+    .notice {
+      border-color: #d7c48a;
+      background: #fff9e8;
+    }
+
+    .send-guard {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      border: 1px solid #d7c48a;
+      border-radius: 8px;
+      background: #fff6d8;
+      padding: 10px 12px;
+      margin-bottom: 14px;
+      box-shadow: 0 3px 12px rgba(23, 32, 42, 0.08);
+    }
+
+    .send-guard.hidden {
+      display: none;
+    }
+
+    .send-guard strong {
+      display: block;
+      margin-bottom: 3px;
+      color: #5f3b00;
+      font-size: 14px;
+    }
+
+    .send-guard span {
+      display: block;
+      color: #5f3b00;
+      font-size: 13px;
+    }
+
+    .send-guard.ready {
+      border-color: #9ac8ad;
+      background: #effaf3;
+    }
+
+    .send-guard.ready strong,
+    .send-guard.ready span {
+      color: var(--ok);
+    }
+
+    .send-guard.danger {
+      border-color: #dfbe78;
+      background: #fff2cc;
+    }
+
+    .trust-panel {
+      border-color: #bdd4ea;
+      background: #f7fbff;
+    }
+
+    .overview-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .overview-item {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      background: #fbfcfd;
+    }
+
+    .panel-note {
+      margin-top: 10px;
+    }
+
+    .inline-status {
+      margin-top: 8px;
+      min-height: 20px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .inline-status.saved {
+      color: var(--ok);
+    }
+
+    .inline-status.warn {
+      color: var(--warn);
+    }
+
+    .validation-result {
+      margin-top: 12px;
+      padding-top: 10px;
+      border-top: 1px solid rgba(100, 113, 127, 0.28);
+    }
+
+    .validation-result h3 {
+      margin-bottom: 8px;
+    }
+
+    .validation-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .validation-item {
+      min-width: 0;
+    }
+
+    .validation-label {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+    }
+
+    .validation-value {
+      margin-top: 2px;
+      color: var(--text);
+      font-size: 13px;
+      font-weight: 600;
+      line-height: 1.35;
+      overflow-wrap: anywhere;
+    }
+
+    .validation-note {
+      margin-top: 8px;
+    }
+
+    .text-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    textarea {
+      width: 100%;
+      min-height: 190px;
+      resize: vertical;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 10px;
+      color: var(--text);
+      background: #fff;
+      font: inherit;
+      line-height: 1.55;
+    }
+
+    textarea.short {
+      min-height: 92px;
+    }
+
+    textarea[readonly] {
+      background: #fafbfc;
+      color: #26313d;
+    }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    button {
+      min-height: 34px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 6px 12px;
+      background: #fff;
+      color: var(--text);
+      font: inherit;
+      cursor: pointer;
+    }
+
+    button.primary {
+      border-color: var(--accent);
+      background: var(--accent);
+      color: #fff;
+    }
+
+    button.primary:hover {
+      background: var(--accent-dark);
+    }
+
+    button:disabled {
+      opacity: 0.58;
+      cursor: not-allowed;
+    }
+
+    .saved {
+      color: var(--ok);
+    }
+
+    .warn {
+      color: var(--warn);
+    }
+
+    @media (max-width: 900px) {
+      .overview-grid,
+      .text-grid,
+      .validation-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (max-width: 680px) {
+      main {
+        padding: 12px;
+      }
+
+      header,
+      .setting-row,
+      .panel-head {
+        align-items: flex-start;
+        grid-template-columns: 1fr;
+        flex-direction: column;
+      }
+
+      .header-actions {
+        justify-content: flex-start;
+      }
+
+      .status {
+        text-align: left;
+      }
+
+      .field {
+        justify-content: flex-start;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <h1>Codex 语音输入校准设置</h1>
+        <p>管理隐私边界、自动应用、持续学习、访问地址和主动校准样本。</p>
+      </div>
+      <div class="header-actions">
+        <div id="status" class="status">载入中</div>
+        <button class="primary" id="save">保存设置</button>
+      </div>
+    </header>
+
+    <div id="sendGuardBanner" class="send-guard hidden" aria-live="polite">
+      <strong id="sendGuardTitle">自动应用保护中</strong>
+      <span id="sendGuardText">语音结束后，请等自动整理回填完成，再点击 Codex 的发送按钮。</span>
+    </div>
+
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <h2>隐私与数据使用</h2>
+          <p>本功能仅处理 Codex 语音输入链路中的文本；不会监听键盘、鼠标或普通手动输入，不会采集屏幕操作，也不会将校准记录用于语音输入优化以外的用途。</p>
+        </div>
+      </div>
+
+      <div class="notice trust-panel">
+        <h3>数据记录条件</h3>
+        <p>仅在启用持续学习，并且你保存语音审核结果或主动校准样本时，写入原始识别文本、自动整理文本、人工核验编辑文本和整理规则。记录保存在本机，用于生成候选规则。</p>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <h2>配置概览</h2>
+          <p>以下设置分别控制自动应用、学习方式、访问方式和手动校准方式。首次使用时可以先启用自动应用，确认效果后再开启持续学习。</p>
+        </div>
+      </div>
+
+      <div class="overview-grid">
+        <div class="overview-item">
+          <h3>持续学习</h3>
+          <p>在你保存语音输入结果时记录文本差异，并在指定时间生成本地候选规则。</p>
+        </div>
+        <div class="overview-item">
+          <h3>访问与启动</h3>
+          <p>固定配置网页地址，并保存是否随 Codex 启动校准服务的偏好。</p>
+        </div>
+        <div class="overview-item">
+          <h3>自动应用</h3>
+          <p>读取 Codex 语音历史，自动整理后尝试替换回 Codex 输入框。</p>
+        </div>
+        <div class="overview-item">
+          <h3>主动校准</h3>
+          <p>通过话题样本测试整理效果，并把你确认后的文本保存为校准样本。</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <h2>持续学习</h2>
+          <p>该功能用于让整理器逐步适应你的语音表达习惯。关闭时，系统不会写入自动对比记录。</p>
+        </div>
+      </div>
+
+      <div class="setting-row">
+        <div>
+          <h3>启用自动对比校准</h3>
+          <p>开启后，保存语音审核结果或主动校准样本时，记录“原始识别文本、自动整理文本、人工核验编辑文本”之间的差异。</p>
+        </div>
+        <label class="switch" aria-label="持续学习">
+          <input id="feedbackEnabled" type="checkbox">
+          <span class="slider"></span>
+        </label>
+      </div>
+
+      <div class="setting-row">
+        <div>
+          <h3>每日迭代时间</h3>
+          <p>到达该时间后，本地脚本读取已保存的差异记录并生成候选规则。该设置仅在持续学习开启后生效。</p>
+        </div>
+        <div class="field">
+          <input id="dailyTime" type="time" value="00:00">
+        </div>
+      </div>
+
+      <div class="setting-row">
+        <div>
+          <h3>自动清理范围</h3>
+          <p>保存样本和每日迭代后自动清理本机学习日志；只处理本项目 voice-feedback 目录，不清理 Codex 原始语音历史。</p>
+        </div>
+        <div class="field">
+          <label class="delay-control">保留
+            <input id="retentionDays" type="number" min="1" max="3650" value="30">
+            天
+          </label>
+          <label class="delay-control">最多
+            <input id="maxTotalStorageMb" type="number" min="1" max="1024" value="20">
+            MB
+          </label>
+        </div>
+      </div>
+
+      <div class="setting-row">
+        <div>
+          <h3>单日样本上限</h3>
+          <p>同一天样本过多时，只保留最新记录，避免某一天的长文本把本地日志撑大。</p>
+        </div>
+        <div class="field">
+          <label class="delay-control">每天最多
+            <input id="maxRecordsPerDay" type="number" min="10" max="10000" value="200">
+            条
+          </label>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <h2>访问与启动</h2>
+          <p>设置校准中心的固定访问地址，以及启动 Codex 时是否自动打开语音输入校准功能。</p>
+        </div>
+      </div>
+
+      <div class="setting-row">
+        <div>
+          <h3>固定配置入口</h3>
+          <p>开启后，校准中心使用固定本地地址，方便收藏、脚本打开或从 Codex 内置浏览器访问。</p>
+        </div>
+        <label class="switch" aria-label="固定配置入口">
+          <input id="fixedEntryEnabled" type="checkbox">
+          <span class="slider"></span>
+        </label>
+      </div>
+
+      <div class="setting-row">
+        <div>
+          <h3>配置网页地址</h3>
+          <p>当前配置网页的访问地址。该地址由本地服务端口决定，保存设置时会自动校正。</p>
+        </div>
+        <div class="field">
+          <input id="fixedEntryUrl" type="text" value="http://127.0.0.1:8793/" readonly>
+        </div>
+      </div>
+
+      <div class="setting-row">
+        <div>
+          <h3>随 Codex 启动</h3>
+          <p>开启后，表示希望启动 Codex 时自动启动本地校准服务并打开固定配置网页。该选项仅保存偏好；真正注册启动任务前仍需用户确认。</p>
+        </div>
+        <label class="switch" aria-label="随 Codex 启动">
+          <input id="autoStartWithCodex" type="checkbox">
+          <span class="slider"></span>
+        </label>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <h2>主动校准</h2>
+          <p>该功能用于手动提供语音输入样本。你确认后的文本会作为该样本的标准答案，用于后续候选规则生成。</p>
+        </div>
+      </div>
+
+      <div class="topic-grid">
+        <div class="field">
+          <select id="topicSelect" aria-label="校准话题"></select>
+        </div>
+
+        <div class="topic-card">
+          <h3 id="topicTitle">等待话题</h3>
+          <p id="topicPrompt">正在载入分层校准话题。</p>
+        </div>
+
+        <div class="notice">
+          <h3>录入与导入</h3>
+          <p>这里只负责把 Codex 已经识别出的语音历史导入到本页，不会读取输入框草稿，也不会复制当前网页。</p>
+
+          <div class="primary-flow">
+            <h3>自动应用模式</h3>
+            <p>开启后，本页会持续读取新的 Codex 语音历史；发现新语音后自动整理，并尝试直接替换回 Codex 输入框。</p>
+            <div class="setting-row">
+              <div>
+                <h3>自动应用到输入框</h3>
+                <p>只处理 Codex 语音历史，不读取普通手动输入；如果无法聚焦 Codex 输入框，会保留整理文本到剪贴板。</p>
+              </div>
+              <label class="switch" aria-label="自动应用到输入框">
+                <input id="autoApplyEnabled" type="checkbox">
+                <span class="slider"></span>
+              </label>
+            </div>
+            <div class="flow-controls">
+              <label class="delay-control" for="autoApplyPollMilliseconds">
+                检查间隔毫秒
+                <input id="autoApplyPollMilliseconds" type="number" min="500" max="5000" step="100" value="500">
+              </label>
+            </div>
+            <div class="inline-status warn">重要：语音结束后不要立刻点 Codex 发送；请等状态显示“可以发送”。否则可能把 Codex 原始识别文本先发出去。</div>
+            <div id="autoApplyState" class="inline-status">自动应用未开启。</div>
+          </div>
+
+          <div class="primary-flow">
+            <h3>手动校准流程</h3>
+            <p>先点“开始校正”，再去 Codex 里说话。页面会每 3 秒检查一次新的语音历史，发现新内容后自动填入下方并生成整理文本。</p>
+            <div class="actions">
+              <button class="primary" id="startCalibrationMonitor">开始校正</button>
+              <button id="stopCalibrationMonitor" disabled>停止校正</button>
+            </div>
+          </div>
+
+          <details class="backup-tools">
+            <summary>高级诊断工具（主流程正常时不用）</summary>
+            <p>主流程已经调通时保持收起即可。只有语音历史没有导入、快捷键没有触发或需要手动兜底时，再展开这些诊断按钮。</p>
+            <div class="flow-controls">
+              <label class="delay-control" for="autoImportDelaySeconds">
+                自动录入等待秒数
+                <input id="autoImportDelaySeconds" type="number" min="2" max="60" step="1" value="8">
+              </label>
+            </div>
+            <div class="actions">
+              <button id="triggerVoice">诊断：发送录入键</button>
+              <button id="autoCaptureVoice">诊断：等待后读取</button>
+              <button id="importLatestTranscription">手动读取语音历史</button>
+              <button id="importClipboard">手动导入剪贴板</button>
+            </div>
+          </details>
+
+          <div id="voiceStatus" class="inline-status">推荐点击“开始校正”，再在 Codex 里完成语音输入。页面会自动等待新的语音历史。</div>
+        </div>
+
+        <div>
+          <h3>整理文本规则</h3>
+          <p>这里的规则会直接参与每次“生成整理文本”；保存设置后，它也会作为下次打开页面的默认规则。</p>
+          <textarea id="rewriteRule" class="short" placeholder="先判断原始口述的真实意图和任务边界；保留事实、否定、时间、数字、路径、文件名、专有名词和条件，不新增原文没有的信息。删除不承载意义的口头禅、重复句、犹豫词和自我打断；对“不是 A，是 B”“不对，改成 B”以后者为准。将“你能不能/是不是可以”改为直接可执行请求，但真正的可行性询问要保留为问题。多件事按 1、2、3 拆分，每项写成“动作 + 对象 + 验证/交付要求”。长句按意图断句，使用规范中文标点；保留必要的语气和不确定性，关键歧义标为“需确认”。输出应简洁、清楚、可执行，适合直接发给 Codex；不要额外添加固定标题。"></textarea>
+        </div>
+
+        <div class="text-grid">
+          <div>
+            <h3>原始识别文本</h3>
+            <textarea id="activeRaw" readonly placeholder="导入后自动填充 Codex 语音功能生成的原始文本；此处只读，用于和 Codex 输入保持一致。"></textarea>
+          </div>
+          <div>
+            <h3>自动整理文本</h3>
+            <textarea id="activePolished" readonly placeholder="点击“生成整理文本”后，此处显示工具自动整理后的版本。"></textarea>
+          </div>
+          <div>
+            <h3>人工核验编辑文本</h3>
+            <textarea id="activeFinal" placeholder="在这里编辑你认可并准备提交给大模型的版本；保存样本时以此作为标准答案。"></textarea>
+          </div>
+        </div>
+
+        <div class="notice return-panel">
+          <h3>完成当前校准</h3>
+          <p>确认回填会把“人工核验编辑文本”写入剪贴板。系统会先尝试切回此前捕获的 Codex 窗口，并聚焦底部输入框；如果聚焦失败，只保留剪贴板内容，不改写审核页文本。</p>
+          <input id="pasteDelaySeconds" type="hidden" value="0">
+          <div class="actions">
+            <button class="primary" id="confirmReturnText">确认回填</button>
+          </div>
+          <div class="actions">
+            <button id="saveActive">保存样本</button>
+            <button id="updateRules">更新规则</button>
+          </div>
+          <div id="learningValidation" class="validation-result" aria-live="polite">
+            <h3>样本与规则结果</h3>
+            <div class="validation-grid">
+              <div class="validation-item">
+                <div class="validation-label">样本状态</div>
+                <div id="sampleSaveState" class="validation-value">未保存</div>
+              </div>
+              <div class="validation-item">
+                <div class="validation-label">样本路径</div>
+                <div id="sampleSavePath" class="validation-value">等待保存</div>
+              </div>
+              <div class="validation-item">
+                <div class="validation-label">规则状态</div>
+                <div id="ruleUpdateState" class="validation-value">未更新</div>
+              </div>
+              <div class="validation-item">
+                <div class="validation-label">候选规则路径</div>
+                <div id="ruleUpdatePath" class="validation-value">等待更新</div>
+              </div>
+            </div>
+            <p id="learningValidationNote" class="validation-note">保存样本会写入本机 JSONL；更新规则会从本机样本生成候选替换，并参与后续自动整理。</p>
+          </div>
+          <div id="returnValidation" class="validation-result" aria-live="polite">
+            <h3>回填校验结果</h3>
+            <div class="validation-grid">
+              <div class="validation-item">
+                <div class="validation-label">状态</div>
+                <div id="returnValidationState" class="validation-value">待回填</div>
+              </div>
+              <div class="validation-item">
+                <div class="validation-label">路径</div>
+                <div id="returnValidationMode" class="validation-value">未执行</div>
+              </div>
+              <div class="validation-item">
+                <div class="validation-label">目标窗口</div>
+                <div id="returnValidationTarget" class="validation-value">未捕获</div>
+              </div>
+              <div class="validation-item">
+                <div class="validation-label">延迟</div>
+                <div id="returnValidationDelay" class="validation-value">0 秒</div>
+              </div>
+            </div>
+            <p id="returnValidationNote" class="validation-note">回填后这里会显示服务返回的校验结果；最终是否进了 Codex 输入框仍以输入框实际内容为准。</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="actions">
+        <button id="clearActive">清空</button>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const statusEl = document.getElementById("status");
+    const feedbackEnabled = document.getElementById("feedbackEnabled");
+    const dailyTime = document.getElementById("dailyTime");
+    const retentionDays = document.getElementById("retentionDays");
+    const maxTotalStorageMb = document.getElementById("maxTotalStorageMb");
+    const maxRecordsPerDay = document.getElementById("maxRecordsPerDay");
+    const fixedEntryEnabled = document.getElementById("fixedEntryEnabled");
+    const fixedEntryUrl = document.getElementById("fixedEntryUrl");
+    const autoStartWithCodex = document.getElementById("autoStartWithCodex");
+    const autoApplyEnabled = document.getElementById("autoApplyEnabled");
+    const autoApplyPollMilliseconds = document.getElementById("autoApplyPollMilliseconds");
+    const autoApplyState = document.getElementById("autoApplyState");
+    const sendGuardBanner = document.getElementById("sendGuardBanner");
+    const sendGuardTitle = document.getElementById("sendGuardTitle");
+    const sendGuardText = document.getElementById("sendGuardText");
+    const topicSelect = document.getElementById("topicSelect");
+    const topicTitle = document.getElementById("topicTitle");
+    const topicPrompt = document.getElementById("topicPrompt");
+    const rewriteRule = document.getElementById("rewriteRule");
+    const activeRaw = document.getElementById("activeRaw");
+    const activePolished = document.getElementById("activePolished");
+    const activeFinal = document.getElementById("activeFinal");
+    const autoCaptureVoice = document.getElementById("autoCaptureVoice");
+    const autoImportDelaySeconds = document.getElementById("autoImportDelaySeconds");
+    const pasteDelaySeconds = document.getElementById("pasteDelaySeconds");
+    const triggerVoice = document.getElementById("triggerVoice");
+    const startCalibrationMonitor = document.getElementById("startCalibrationMonitor");
+    const stopCalibrationMonitor = document.getElementById("stopCalibrationMonitor");
+    const importLatestTranscription = document.getElementById("importLatestTranscription");
+    const importClipboard = document.getElementById("importClipboard");
+    const confirmReturnText = document.getElementById("confirmReturnText");
+    const updateRules = document.getElementById("updateRules");
+    const voiceStatus = document.getElementById("voiceStatus");
+    const returnValidationState = document.getElementById("returnValidationState");
+    const returnValidationMode = document.getElementById("returnValidationMode");
+    const returnValidationTarget = document.getElementById("returnValidationTarget");
+    const returnValidationDelay = document.getElementById("returnValidationDelay");
+    const returnValidationNote = document.getElementById("returnValidationNote");
+    const sampleSaveState = document.getElementById("sampleSaveState");
+    const sampleSavePath = document.getElementById("sampleSavePath");
+    const ruleUpdateState = document.getElementById("ruleUpdateState");
+    const ruleUpdatePath = document.getElementById("ruleUpdatePath");
+    const learningValidationNote = document.getElementById("learningValidationNote");
+
+    let topics = [];
+    let monitorTimer = null;
+    let monitorBaselineCreatedAtMs = 0;
+    let monitorStartedAtMs = 0;
+    let monitorIsPolling = false;
+    const monitorIntervalMs = 3000;
+    const monitorTimeoutMs = 120000;
+    let autoApplyTimer = null;
+    let autoApplyBaselineCreatedAtMs = 0;
+    let autoApplyIsPolling = false;
+
+    function setStatus(text, className) {
+      statusEl.textContent = text;
+      statusEl.className = "status " + (className || "");
+    }
+
+    function setVoiceStatus(text, className) {
+      voiceStatus.textContent = text;
+      voiceStatus.className = "inline-status " + (className || "");
+    }
+
+    function setAutoApplyState(text, className) {
+      autoApplyState.textContent = text;
+      autoApplyState.className = "inline-status " + (className || "");
+    }
+
+    function setSendGuard(mode, title, text) {
+      sendGuardTitle.textContent = title;
+      sendGuardText.textContent = text;
+      sendGuardBanner.className = "send-guard " + (mode || "");
+    }
+
+    function hideSendGuard() {
+      sendGuardBanner.className = "send-guard hidden";
+    }
+
+    function targetLabel(target) {
+      if (!target) {
+        return "未捕获";
+      }
+
+      const title = target.title || "";
+      const processName = target.processName || "";
+      if (title && processName) {
+        return `${title} / ${processName}`;
+      }
+
+      return title || processName || "已捕获窗口";
+    }
+
+    function pasteModeLabel(result) {
+      if (!result?.copied) {
+        return "未复制";
+      }
+
+      if (result.pastedImmediately) {
+        return result.pasteMode === "direct_sta" ? "服务内直接回填" : "直接回填";
+      }
+
+      if (result.pasteScheduled) {
+        return result.pasteMode === "background_powershell" ? "后台延迟回填" : "已安排回填";
+      }
+
+      if (result.pasteSkippedReason) {
+        return "仅复制到剪贴板";
+      }
+
+      return "已写入剪贴板";
+    }
+
+    function updateReturnValidation(result) {
+      const copied = Boolean(result?.copied);
+      const skippedReason = result?.pasteSkippedReason || "";
+      const state = !copied
+        ? "失败"
+        : result.pastedImmediately
+          ? "已直接回填"
+          : result.pasteScheduled
+            ? "已安排回填"
+            : skippedReason
+              ? "已复制，未粘贴"
+              : "已复制";
+
+      returnValidationState.textContent = state;
+      returnValidationMode.textContent = pasteModeLabel(result);
+      returnValidationTarget.textContent = targetLabel(result?.pasteTarget);
+      returnValidationDelay.textContent = `${Number(result?.pasteDelaySeconds || 0)} 秒`;
+
+      const noteParts = [];
+      if (copied) {
+        noteParts.push("人工核验文本已写入剪贴板。");
+      }
+      if (result?.pastedImmediately) {
+        noteParts.push("本次走零延迟路径，服务已直接尝试聚焦并粘贴。");
+      }
+      else if (result?.pasteScheduled) {
+        noteParts.push("本次已交给后台回填流程。");
+      }
+      if (result?.codexComposerFocusAttempted) {
+        noteParts.push("目标为 Codex 时已尝试聚焦底部输入框。");
+      }
+      if (skippedReason) {
+        noteParts.push(`跳过粘贴原因：${skippedReason}。`);
+      }
+      noteParts.push("最终是否进入 Codex 输入框，以输入框实际内容为准。");
+      returnValidationNote.textContent = noteParts.join("");
+    }
+
+    function formatBytes(bytes) {
+      const value = Number(bytes || 0);
+      if (value < 1024) {
+        return `${value} B`;
+      }
+      const mb = value / (1024 * 1024);
+      if (mb >= 1) {
+        return `${mb.toFixed(2)} MB`;
+      }
+      return `${(value / 1024).toFixed(1)} KB`;
+    }
+
+    function cleanupSummary(cleanup) {
+      if (!cleanup?.cleaned) {
+        return "";
+      }
+
+      const deleted = Number(cleanup.deletedFileCount || 0);
+      const compacted = Number(cleanup.compactedFileCount || 0);
+      const total = formatBytes(cleanup.totalBytesAfter || 0);
+      return `自动清理：删除 ${deleted} 个旧日志，压缩 ${compacted} 个日志，当前约 ${total}。`;
+    }
+
+    function updateSampleSaveResult(result) {
+      if (!result?.recorded) {
+        sampleSaveState.textContent = `未保存：${result?.reason || "未知原因"}`;
+        learningValidationNote.textContent = "样本没有写入本机。请确认原始识别文本和人工核验编辑文本都不为空。";
+        return;
+      }
+
+      sampleSaveState.textContent = "已保存";
+      sampleSavePath.textContent = result.path || "已写入默认路径";
+      const cleanupText = cleanupSummary(result.cleanup);
+      learningValidationNote.textContent = `样本已写入本机 JSONL。点击“更新规则”后，会读取这些样本并生成候选替换。${cleanupText}`;
+    }
+
+    function updateRuleUpdateResult(result) {
+      if (!result?.generated) {
+        ruleUpdateState.textContent = `未生成：${result?.reason || "未知原因"}`;
+        learningValidationNote.textContent = "候选规则没有生成。请先保存至少一条样本，再点击“更新规则”。";
+        return;
+      }
+
+      const candidates = Number(result.replacementCandidateCount || 0);
+      const changed = Number(result.changedEvents || 0);
+      const seen = Number(result.eventsSeen || 0);
+      ruleUpdateState.textContent = `已生成 ${candidates} 条候选`;
+      ruleUpdatePath.textContent = result.path || "已写入默认路径";
+
+      const preview = Array.isArray(result.topReplacementCandidates)
+        ? result.topReplacementCandidates
+            .map(item => `${item.autoFragment || "空"} -> ${item.preferredFragment || "空"}`)
+            .slice(0, 3)
+            .join("；")
+        : "";
+      learningValidationNote.textContent = `本次读取 ${seen} 条样本，其中 ${changed} 条有人工修改。候选规则会作为精确替换参与后续自动整理。${preview ? `示例：${preview}` : "暂无可展示候选。"}`;
+      const cleanupText = cleanupSummary(result.cleanup);
+      if (cleanupText) {
+        learningValidationNote.textContent += cleanupText;
+      }
+    }
+
+    function clampInteger(value, fallback, min, max) {
+      const parsed = Number.parseInt(value, 10);
+      if (Number.isNaN(parsed)) {
+        return fallback;
+      }
+
+      return Math.min(max, Math.max(min, parsed));
+    }
+
+    function clampDelaySeconds(value) {
+      const parsed = Number.parseInt(value, 10);
+      if (Number.isNaN(parsed)) {
+        return 8;
+      }
+
+      return Math.min(60, Math.max(2, parsed));
+    }
+
+    function clampPasteDelaySeconds(value) {
+      const parsed = Number.parseInt(value, 10);
+      if (Number.isNaN(parsed)) {
+        return 0;
+      }
+
+      return Math.min(10, Math.max(0, parsed));
+    }
+
+    function clampPollMilliseconds(value) {
+      const parsed = Number.parseInt(value, 10);
+      if (Number.isNaN(parsed)) {
+        return 500;
+      }
+
+      return Math.min(5000, Math.max(500, parsed));
+    }
+
+    function setVoiceButtonsDisabled(disabled) {
+      autoCaptureVoice.disabled = disabled;
+      triggerVoice.disabled = disabled;
+      startCalibrationMonitor.disabled = disabled;
+      importLatestTranscription.disabled = disabled;
+      importClipboard.disabled = disabled;
+    }
+
+    function setMonitorButtons(active) {
+      startCalibrationMonitor.disabled = active;
+      stopCalibrationMonitor.disabled = !active;
+      autoCaptureVoice.disabled = active;
+      triggerVoice.disabled = active;
+      importLatestTranscription.disabled = active;
+      importClipboard.disabled = active;
+    }
+
+    function selectedTopic() {
+      return topics.find(topic => topic.id === topicSelect.value) || topics[0] || null;
+    }
+
+    function updateLearningControls() {
+      dailyTime.disabled = !feedbackEnabled.checked;
+      retentionDays.disabled = !feedbackEnabled.checked;
+      maxTotalStorageMb.disabled = !feedbackEnabled.checked;
+      maxRecordsPerDay.disabled = !feedbackEnabled.checked;
+    }
+
+    function renderSelectedTopic() {
+      const topic = selectedTopic();
+      if (!topic) {
+        topicTitle.textContent = "没有可用话题";
+        topicPrompt.textContent = "";
+        return;
+      }
+
+      topicTitle.textContent = topic.title;
+      topicPrompt.textContent = topic.prompt;
+    }
+
+    async function loadSettings() {
+      const response = await fetch("/api/settings");
+      const settings = await response.json();
+      const learning = settings.feedbackLearning || {};
+      const fixedEntry = settings.fixedEntry || {};
+      const activeCalibration = settings.activeCalibration || {};
+
+      feedbackEnabled.checked = Boolean(learning.enabled);
+      dailyTime.value = learning.dailyIterationTime || "00:00";
+      retentionDays.value = clampInteger(learning.retentionDays, 30, 1, 3650);
+      maxTotalStorageMb.value = clampInteger(learning.maxTotalStorageMb, 20, 1, 1024);
+      maxRecordsPerDay.value = clampInteger(learning.maxRecordsPerDay, 200, 10, 10000);
+      fixedEntryEnabled.checked = fixedEntry.enabled !== false;
+      fixedEntryUrl.value = fixedEntry.url || "http://127.0.0.1:8793/";
+      autoStartWithCodex.checked = Boolean(fixedEntry.autoStartWithCodex);
+      rewriteRule.value = activeCalibration.defaultRewriteRule || "";
+      autoImportDelaySeconds.value = clampDelaySeconds(activeCalibration.autoImportDelaySeconds || 8);
+      pasteDelaySeconds.value = clampPasteDelaySeconds(activeCalibration.pasteDelaySeconds ?? 0);
+      autoApplyEnabled.checked = Boolean(activeCalibration.autoApplyEnabled);
+      autoApplyPollMilliseconds.value = clampPollMilliseconds(activeCalibration.autoApplyPollMilliseconds || 500);
+      triggerVoice.textContent = `仅发送语音快捷键（${activeCalibration.voiceHotkeyLabel || "Ctrl+Shift+D"}）`;
+      updateLearningControls();
+      syncAutoApplyFromSettings();
+    }
+
+    async function loadTopics() {
+      const response = await fetch("/api/onboarding-topics");
+      const config = await response.json();
+      const stages = new Map((config.stages || []).map(stage => [stage.id, stage.title]));
+      topics = config.topics || [];
+      topicSelect.innerHTML = "";
+
+      for (const topic of topics) {
+        const option = document.createElement("option");
+        option.value = topic.id;
+        option.textContent = `${stages.get(topic.stage) || topic.stage} / ${topic.title}`;
+        topicSelect.appendChild(option);
+      }
+
+      renderSelectedTopic();
+    }
+
+    async function saveSettings() {
+      const payload = {
+        feedbackLearning: {
+          enabled: feedbackEnabled.checked,
+          dailyIterationTime: dailyTime.value || "00:00",
+          retentionDays: clampInteger(retentionDays.value, 30, 1, 3650),
+          maxTotalStorageMb: clampInteger(maxTotalStorageMb.value, 20, 1, 1024),
+          maxRecordsPerDay: clampInteger(maxRecordsPerDay.value, 200, 10, 10000),
+          captureOnlyWhenWebReviewSaves: true,
+          cleanupAfterSave: true,
+          cleanupAfterDailyIteration: true,
+          allowKeyboardMouseMonitoring: false
+        },
+        fixedEntry: {
+          enabled: fixedEntryEnabled.checked,
+          autoStartWithCodex: autoStartWithCodex.checked
+        },
+        activeCalibration: {
+          autoImportDelaySeconds: clampDelaySeconds(autoImportDelaySeconds.value),
+          pasteDelaySeconds: clampPasteDelaySeconds(pasteDelaySeconds.value),
+          autoApplyEnabled: autoApplyEnabled.checked,
+          autoApplyPollMilliseconds: clampPollMilliseconds(autoApplyPollMilliseconds.value),
+          defaultRewriteRule: rewriteRule.value.trim()
+        }
+      };
+
+      const response = await fetch("/api/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+
+      if (!response.ok) {
+        throw new Error("settings save failed");
+      }
+
+      const settings = await response.json();
+      fixedEntryUrl.value = settings.fixedEntry?.url || "http://127.0.0.1:8793/";
+      syncAutoApplyFromSettings();
+      setStatus("设置已保存", "saved");
+    }
+
+    function finalTextForReturn() {
+      return activeFinal.value.trim();
+    }
+
+    async function applyFinalText() {
+      const finalText = finalTextForReturn();
+      if (!finalText) {
+        setStatus("人工核验文本为空", "warn");
+        setVoiceStatus("没有可回填的人工核验编辑文本。请先导入、生成并核验文本。", "warn");
+        activeFinal.focus();
+        return;
+      }
+
+      const delaySeconds = clampPasteDelaySeconds(pasteDelaySeconds.value);
+      pasteDelaySeconds.value = delaySeconds;
+      confirmReturnText.disabled = true;
+
+      const response = await fetch("/api/apply-final-text", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          text: finalText,
+          sendPaste: true,
+          pasteDelaySeconds: delaySeconds,
+          replaceExisting: true,
+          useCapturedTarget: true
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error("apply final text failed");
+      }
+
+      const result = await response.json();
+      confirmReturnText.disabled = false;
+      updateReturnValidation(result);
+
+      if (!result.copied) {
+        setStatus("回填失败", "warn");
+        setVoiceStatus("人工核验编辑文本为空或写入剪贴板失败。", "warn");
+        return;
+      }
+
+      const target = result.pasteTarget;
+      const targetText = target?.title || target?.processName
+        ? `系统会先尝试切回此前捕获的窗口：${target.title || target.processName}。${result.codexComposerFocusAttempted ? "若目标是 Codex，会再尝试聚焦底部输入框；聚焦失败时将跳过按键粘贴。" : ""}`
+        : "未捕获到明确窗口时，本次只写入剪贴板，不发送粘贴按键。";
+      const delayText = delaySeconds > 0 ? `${delaySeconds} 秒后` : "马上";
+      const returnStatus = result.pastedImmediately ? "已直接回填" : "已准备回填";
+      const returnAction = result.pastedImmediately
+        ? "已经尝试完成全选并粘贴核验文本。"
+        : `${delayText}会先全选原内容，再粘贴核验文本。`;
+      const skipText = result.pasteSkippedReason ? `本次没有发送粘贴按键：${result.pasteSkippedReason}。` : "";
+      setStatus(returnStatus, "saved");
+      setVoiceStatus(`人工核验编辑文本已写入剪贴板。${targetText} ${returnAction}${skipText}`, "saved");
+    }
+
+    async function triggerVoiceInput() {
+      setVoiceButtonsDisabled(true);
+      setVoiceStatus("正在发送语音录入快捷键。若 Codex 没有弹出录音界面，请确认 Codex 当前支持该快捷键。", "");
+
+      const response = await fetch("/api/voice-hotkey", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}"
+      });
+
+      if (!response.ok) {
+        throw new Error("voice hotkey failed");
+      }
+
+      const result = await response.json();
+      setStatus(`已发送录入键：${result.label || result.hotkey}`, "saved");
+      setVoiceStatus(`已发送录入键：${result.label || result.hotkey}。它只负责打开 Codex 语音录入，不会导入文本。`, "saved");
+      setVoiceButtonsDisabled(false);
+    }
+
+    async function polishActiveText(options = {}) {
+      const rawText = activeRaw.value.trim();
+      if (!rawText) {
+        setStatus("原始文本为空", "warn");
+        setVoiceStatus("没有可整理的原始识别文本。请先导入识别结果。", "warn");
+        activeRaw.focus();
+        return;
+      }
+
+      const response = await fetch("/api/polish", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          rawText,
+          rewriteRule: rewriteRule.value.trim()
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error("polish failed");
+      }
+
+      const result = await response.json();
+      activePolished.value = result.polishedText || "";
+      const shouldSyncFinal = Boolean(options.fromAutoCapture || options.fromImport || options.syncFinal || !activeFinal.value.trim());
+      if (shouldSyncFinal) {
+        activeFinal.value = result.polishedText || rawText;
+      }
+      setStatus("已生成整理文本", "saved");
+      if (options.fromAutoCapture) {
+        setVoiceStatus("已自动取回识别文本，并生成整理文本。人工核验编辑文本已填入，可继续编辑后保存样本。", "saved");
+      }
+      else {
+        setVoiceStatus(options.fromImport ? "已导入识别结果，并自动生成整理文本。人工核验编辑文本已填入，可继续编辑后保存样本。" : (shouldSyncFinal ? "已生成整理文本，并填入人工核验编辑文本。" : "已生成自动整理文本，人工核验编辑文本未被覆盖。"), "saved");
+      }
+    }
+
+    async function useImportedText(text, options = {}) {
+      const normalized = (text || "").trim();
+      if (!normalized) {
+        setStatus(options.emptyStatus || "没有读取到文本", "warn");
+        setVoiceStatus(options.emptyMessage || "没有读取到文本。请确认语音识别已经完成，或手动复制识别结果后再导入。", "warn");
+        return false;
+      }
+
+      activeRaw.value = normalized;
+      setStatus(options.loadedStatus || "已导入识别结果", "saved");
+      await polishActiveText(options);
+      return true;
+    }
+
+    async function autoCaptureVoiceInput() {
+      const delaySeconds = clampDelaySeconds(autoImportDelaySeconds.value);
+      autoImportDelaySeconds.value = delaySeconds;
+      setVoiceButtonsDisabled(true);
+      setVoiceStatus(`自动流程：正在发送语音快捷键，并等待 ${delaySeconds} 秒后读取 Codex 本地语音历史。它不会复制当前网页或输入框。`, "");
+
+      const response = await fetch("/api/voice-auto-capture", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ delaySeconds })
+      });
+
+      if (!response.ok) {
+        throw new Error("voice auto capture failed");
+      }
+
+      const result = await response.json();
+      if (result.rejected) {
+        setStatus("自动取回已停止", "warn");
+        const rejectedMessage = result.reason === "no_new_transcription"
+          ? "等待后没有发现新的 Codex 语音历史。请确认语音识别已经结束，或稍后点击“导入 Codex 最新语音历史”。"
+          : "自动流程没有读到可用的 Codex 语音历史。请确认本机存在 transcription-history.jsonl，或改用手动导入。";
+        setVoiceStatus(rejectedMessage, "warn");
+        activeRaw.focus();
+        setVoiceButtonsDisabled(false);
+        return;
+      }
+
+      const ok = await useImportedText(result.text || "", {
+        fromImport: true,
+        fromAutoCapture: true,
+        loadedStatus: "已自动取回识别结果",
+        emptyStatus: "自动取回为空",
+        emptyMessage: "没有自动取回文本。可能是语音识别尚未完成，或 Codex 没有写入新的语音历史。请稍后点击“导入 Codex 最新语音历史”。"
+      });
+
+      if (!ok) {
+        activeRaw.focus();
+      }
+
+      setVoiceButtonsDisabled(false);
+    }
+
+    async function fetchLatestCodexTranscription(payload = {}) {
+      const response = await fetch("/api/latest-codex-transcription", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+
+      if (!response.ok) {
+        throw new Error("latest transcription import failed");
+      }
+
+      return response.json();
+    }
+
+    async function fetchAutoApplyCodexTranscription(payload = {}) {
+      const response = await fetch("/api/auto-apply-codex-transcription", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+
+      if (!response.ok) {
+        throw new Error("auto apply failed");
+      }
+
+      return response.json();
+    }
+
+    function stopAutoApply(message = "自动应用未开启。", className = "") {
+      if (autoApplyTimer) {
+        window.clearInterval(autoApplyTimer);
+        autoApplyTimer = null;
+      }
+
+      autoApplyIsPolling = false;
+      setAutoApplyState(message, className);
+      hideSendGuard();
+    }
+
+    async function startAutoApply() {
+      stopAutoApply("正在初始化自动应用。", "");
+
+      const baseline = await fetchLatestCodexTranscription({ maxAgeSeconds: 0 });
+      autoApplyBaselineCreatedAtMs = baseline.found && baseline.createdAtMs ? Number(baseline.createdAtMs) : 0;
+
+      const pollMilliseconds = clampPollMilliseconds(autoApplyPollMilliseconds.value);
+      autoApplyPollMilliseconds.value = pollMilliseconds;
+      setSendGuard("danger", "自动应用保护中", "语音结束后先别点 Codex 发送。等这里显示“可以发送”后，再发送当前输入。");
+      setAutoApplyState(`自动应用已开启；每 ${pollMilliseconds} 毫秒检查新的 Codex 语音历史。语音结束后请等回填完成再发送。`, "warn");
+      autoApplyTimer = window.setInterval(() => {
+        pollAutoApplyHistory();
+      }, pollMilliseconds);
+    }
+
+    function syncAutoApplyFromSettings() {
+      if (autoApplyEnabled.checked) {
+        startAutoApply().catch(() => {
+          autoApplyEnabled.checked = false;
+          stopAutoApply("自动应用启动失败。请确认本地服务能读取 Codex 语音历史。", "warn");
+        });
+      }
+      else {
+        stopAutoApply();
+      }
+    }
+
+    async function pollAutoApplyHistory() {
+      if (!autoApplyEnabled.checked) {
+        stopAutoApply();
+        return;
+      }
+
+      if (autoApplyIsPolling) {
+        return;
+      }
+
+      autoApplyIsPolling = true;
+      try {
+        const result = await fetchAutoApplyCodexTranscription({
+          afterCreatedAtMs: autoApplyBaselineCreatedAtMs,
+          rewriteRule: rewriteRule.value.trim()
+        });
+
+        if (!result.found) {
+          setSendGuard("danger", "自动应用保护中", "语音结束后先别点 Codex 发送。等自动整理回填完成，再发送当前输入。");
+          setAutoApplyState("自动应用已开启，正在等待新的 Codex 语音历史。语音结束后不要立刻发送。", "warn");
+          return;
+        }
+
+        const createdAtMs = Number(result.createdAtMs || result.latest?.createdAtMs || 0);
+        if (createdAtMs > 0) {
+          autoApplyBaselineCreatedAtMs = createdAtMs;
+        }
+
+        activeRaw.value = result.rawText || "";
+        activePolished.value = result.polishedText || "";
+        activeFinal.value = result.finalText || result.polishedText || result.rawText || "";
+
+        if (result.applyResult) {
+          updateReturnValidation(result.applyResult);
+        }
+
+        if (!result.applied) {
+          const reason = result.error || result.reason || "未知原因";
+          setStatus("自动应用未完成", "warn");
+          setSendGuard("danger", "请先不要发送", "自动应用没有完成。请检查 Codex 输入框，或手动粘贴剪贴板中的整理文本。");
+          setAutoApplyState(`已读到新语音，但自动应用失败：${reason}`, "warn");
+          return;
+        }
+
+        const applyResult = result.applyResult || {};
+        if (applyResult.pastedImmediately) {
+          setStatus("已自动整理并回填", "saved");
+          setSendGuard("ready", "可以发送", "已自动整理并尝试回填到 Codex 输入框。请确认输入框内容正确后再发送。");
+          setAutoApplyState("已检测到新语音，完成自动整理并尝试回填到 Codex 输入框。现在可以确认后发送。", "saved");
+        }
+        else if (applyResult.pasteSkippedReason) {
+          setStatus("已自动整理，等待手动粘贴", "warn");
+          setSendGuard("danger", "请先不要发送", "整理文本已写入剪贴板，但没有成功回填。请手动粘贴或确认输入框内容后再发送。");
+          setAutoApplyState(`已整理并写入剪贴板，但没有发送粘贴按键：${applyResult.pasteSkippedReason}`, "warn");
+        }
+        else {
+          setStatus("已自动整理", "saved");
+          setSendGuard("ready", "可以发送", "已自动整理并安排回填。请确认 Codex 输入框内容正确后再发送。");
+          setAutoApplyState("已检测到新语音，整理文本已写入剪贴板并安排回填。确认输入框内容正确后可以发送。", "saved");
+        }
+      }
+      catch {
+        setSendGuard("danger", "请先不要发送", "自动应用检查失败。请确认服务仍在运行，或手动粘贴整理文本。");
+        setAutoApplyState("自动应用检查失败。请确认本地服务仍在运行。", "warn");
+      }
+      finally {
+        autoApplyIsPolling = false;
+      }
+    }
+
+    function stopCalibrationMonitoring(message = "已停止校正。", className = "") {
+      if (monitorTimer) {
+        window.clearInterval(monitorTimer);
+        monitorTimer = null;
+      }
+
+      monitorIsPolling = false;
+      setMonitorButtons(false);
+      setVoiceStatus(message, className);
+    }
+
+    async function pollCalibrationHistory() {
+      if (monitorIsPolling) {
+        return;
+      }
+
+      monitorIsPolling = true;
+      try {
+        const elapsedSeconds = Math.floor((Date.now() - monitorStartedAtMs) / 1000);
+        if (elapsedSeconds >= Math.floor(monitorTimeoutMs / 1000)) {
+          stopCalibrationMonitoring("已等待 2 分钟，没有发现新的 Codex 语音历史。可以重新点击“开始校正”。", "warn");
+          return;
+        }
+
+        const result = await fetchLatestCodexTranscription({
+          afterCreatedAtMs: monitorBaselineCreatedAtMs,
+          maxAgeSeconds: 0
+        });
+
+        if (!result.found) {
+          setVoiceStatus(`正在等待新的 Codex 语音历史，已等待 ${elapsedSeconds} 秒。`, "");
+          return;
+        }
+
+        const ok = await useImportedText(result.text || "", {
+          fromImport: true,
+          fromAutoCapture: true,
+          loadedStatus: "已自动导入 Codex 新语音历史",
+          emptyStatus: "语音历史为空",
+          emptyMessage: "读取到了新的 Codex 语音历史，但文本为空。请重新录入。"
+        });
+
+        if (ok) {
+          stopCalibrationMonitoring("已检测到新的 Codex 语音历史，并自动导入整理。", "saved");
+        }
+      }
+      catch {
+        stopCalibrationMonitoring("校正监听失败。请确认本地服务仍在运行，并能读取 Codex 语音历史。", "warn");
+      }
+      finally {
+        monitorIsPolling = false;
+      }
+    }
+
+    async function startCalibrationMonitoring() {
+      if (monitorTimer) {
+        stopCalibrationMonitoring("", "");
+      }
+
+      setMonitorButtons(true);
+      setVoiceStatus("正在记录当前最新语音历史位置。记录完成后，请切回 Codex 开始语音输入。", "");
+
+      try {
+        const baseline = await fetchLatestCodexTranscription({ maxAgeSeconds: 0 });
+        monitorBaselineCreatedAtMs = baseline.found && baseline.createdAtMs ? Number(baseline.createdAtMs) : 0;
+        monitorStartedAtMs = Date.now();
+        setVoiceStatus("开始校正中：请切回 Codex 说话。页面会每 3 秒检查一次新语音历史。", "saved");
+        monitorTimer = window.setInterval(() => {
+          pollCalibrationHistory();
+        }, monitorIntervalMs);
+        pollCalibrationHistory();
+      }
+      catch {
+        setMonitorButtons(false);
+        setVoiceStatus("开始校正失败。请确认本地服务能读取 Codex 语音历史。", "warn");
+      }
+    }
+
+    async function importLatestCodexTranscription() {
+      setVoiceButtonsDisabled(true);
+      setVoiceStatus("正在读取最近一条 Codex 语音历史。", "");
+
+      const result = await fetchLatestCodexTranscription({ maxAgeSeconds: 900 });
+      if (!result.found) {
+        setStatus("没有可导入的语音历史", "warn");
+        setVoiceStatus("没有找到 Codex 语音历史。请先使用 Codex 语音录入，等识别完成后再导入。", "warn");
+        setVoiceButtonsDisabled(false);
+        return;
+      }
+
+      if (result.stale) {
+        setStatus("语音历史可能不是刚才这条", "warn");
+        setVoiceStatus(`找到最新语音历史，但它距离现在约 ${result.ageSeconds} 秒。请确认是不是刚才那条。`, "warn");
+      }
+
+      await useImportedText(result.text || "", {
+        fromImport: true,
+        loadedStatus: "已导入最近一条语音历史",
+        emptyStatus: "语音历史为空",
+        emptyMessage: "Codex 最新语音历史为空。请重新录入或改用手动导入。"
+      });
+      setVoiceButtonsDisabled(false);
+    }
+
+    async function importClipboardText() {
+      setVoiceButtonsDisabled(true);
+      setVoiceStatus("正在读取剪贴板中的识别结果。此操作只响应本次点击，不会持续监听剪贴板。", "");
+
+      const response = await fetch("/api/clipboard-text", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}"
+      });
+
+      if (!response.ok) {
+        throw new Error("clipboard import failed");
+      }
+
+      const result = await response.json();
+      await useImportedText(result.text || "", {
+        fromImport: true,
+        emptyStatus: "剪贴板为空",
+        emptyMessage: "没有读取到文本。请先在 Codex 文本框中复制语音识别结果，再点击手动导入。"
+      });
+      setVoiceButtonsDisabled(false);
+    }
+
+    async function saveActiveSample() {
+      const topic = selectedTopic();
+      const rawText = activeRaw.value.trim();
+      const polishedText = activePolished.value.trim();
+      const finalText = activeFinal.value.trim();
+      const rule = rewriteRule.value.trim();
+
+      if (!topic || !rawText || !finalText) {
+        setStatus("校准样本不完整", "warn");
+        setVoiceStatus("请先导入原始识别文本，并在人工核验编辑文本中保留标准答案。", "warn");
+        return;
+      }
+
+      const response = await fetch("/api/feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          source: "codex_voice_active_calibration",
+          captureContext: "codex_voice_input",
+          decision: "active_calibration_saved",
+          stage: topic.stage,
+          topicId: topic.id,
+          topicTitle: topic.title,
+          rewriteRule: rule,
+          rawText,
+          polishedText,
+          finalText,
+          notes: [`主动校准：${topic.title}`]
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error("save calibration failed");
+      }
+
+      const result = await response.json();
+      if (result.recorded) {
+        updateSampleSaveResult(result);
+        setStatus("样本已保存", "saved");
+        setVoiceStatus("当前样本已保存。需要基于已保存样本生成候选规则时，再点击“更新规则”。", "saved");
+      }
+      else {
+        updateSampleSaveResult(result);
+        setStatus(`未保存：${result.reason || "未知原因"}`, "warn");
+        setVoiceStatus("样本没有保存成功，请检查原始识别文本和人工核验编辑文本是否完整。", "warn");
+      }
+    }
+
+    async function updateRulesFromSavedSamples() {
+      updateRules.disabled = true;
+      const response = await fetch("/api/feedback-learning-iteration", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}"
+      });
+
+      if (!response.ok) {
+        throw new Error("update rules failed");
+      }
+
+      const result = await response.json();
+      updateRules.disabled = false;
+
+      if (result.generated) {
+        updateRuleUpdateResult(result);
+        setStatus("候选规则已更新", "saved");
+        setVoiceStatus("已根据本地保存样本更新候选规则；这些候选会作为精确替换参与后续自动整理。", "saved");
+      }
+      else {
+        updateRuleUpdateResult(result);
+        setStatus("更新规则未完成", "warn");
+        setVoiceStatus(`候选规则没有生成：${result.reason || "未知原因"}`, "warn");
+      }
+    }
+
+    feedbackEnabled.addEventListener("change", updateLearningControls);
+
+    autoApplyEnabled.addEventListener("change", () => {
+      if (!autoApplyEnabled.checked) {
+        stopAutoApply("自动应用已关闭。", "");
+      }
+
+      saveSettings().catch(() => {
+        setStatus("保存失败", "warn");
+        setAutoApplyState("自动应用设置保存失败。", "warn");
+      });
+    });
+
+    autoApplyPollMilliseconds.addEventListener("change", () => {
+      autoApplyPollMilliseconds.value = clampPollMilliseconds(autoApplyPollMilliseconds.value);
+      saveSettings().catch(() => {
+        setStatus("保存失败", "warn");
+        setAutoApplyState("自动应用检查间隔保存失败。", "warn");
+      });
+    });
+
+    document.getElementById("save").addEventListener("click", () => {
+      saveSettings().catch(() => setStatus("保存失败", "warn"));
+    });
+
+    topicSelect.addEventListener("change", renderSelectedTopic);
+
+    startCalibrationMonitor.addEventListener("click", () => {
+      startCalibrationMonitoring();
+    });
+
+    stopCalibrationMonitor.addEventListener("click", () => {
+      stopCalibrationMonitoring("已手动停止校正。", "");
+    });
+
+    autoCaptureVoice.addEventListener("click", () => {
+      autoCaptureVoiceInput()
+        .catch(() => {
+          setVoiceButtonsDisabled(false);
+          setStatus("自动录入导入失败", "warn");
+          setVoiceStatus("发送语音键并等待读取失败。请确认本地服务正在运行，或改用“开始校正”。", "warn");
+        });
+    });
+
+    triggerVoice.addEventListener("click", () => {
+      triggerVoiceInput()
+        .catch(() => {
+          setVoiceButtonsDisabled(false);
+          setStatus("录入键发送失败", "warn");
+          setVoiceStatus("录入键发送失败。请检查本地服务是否运行，或确认 Codex 语音快捷键配置。", "warn");
+        });
+    });
+
+    importClipboard.addEventListener("click", () => {
+      importClipboardText()
+        .catch(() => {
+          setVoiceButtonsDisabled(false);
+          setStatus("导入失败", "warn");
+          setVoiceStatus("导入失败。请确认剪贴板中存在 Codex 语音识别文本。", "warn");
+        });
+    });
+
+    importLatestTranscription.addEventListener("click", () => {
+      importLatestCodexTranscription()
+        .catch(() => {
+          setVoiceButtonsDisabled(false);
+          setStatus("语音历史导入失败", "warn");
+          setVoiceStatus("语音历史导入失败。请确认本地服务已更新并能读取 Codex 的 transcription-history.jsonl。", "warn");
+        });
+    });
+
+    document.getElementById("saveActive").addEventListener("click", () => {
+      saveActiveSample().catch(() => setStatus("保存样本失败", "warn"));
+    });
+
+    updateRules.addEventListener("click", () => {
+      updateRulesFromSavedSamples()
+        .catch(() => {
+          updateRules.disabled = false;
+          setStatus("更新规则失败", "warn");
+          setVoiceStatus("更新候选规则失败。请确认本地服务仍在运行，并且已经保存过校准样本。", "warn");
+        });
+    });
+
+    confirmReturnText.addEventListener("click", () => {
+      applyFinalText()
+        .catch(() => {
+          confirmReturnText.disabled = false;
+          updateReturnValidation({
+            copied: false,
+            pasteDelaySeconds: clampPasteDelaySeconds(pasteDelaySeconds.value),
+            pasteSkippedReason: "apply_final_text_failed"
+          });
+          setStatus("回填失败", "warn");
+          setVoiceStatus("确认回填失败。请确认本地服务仍在运行。", "warn");
+        });
+    });
+
+    document.getElementById("clearActive").addEventListener("click", () => {
+      activeRaw.value = "";
+      activePolished.value = "";
+      activeFinal.value = "";
+      setStatus("已清空", "");
+      setVoiceStatus("已清空当前主动校准文本。", "");
+    });
+
+    Promise.all([loadSettings(), loadTopics()])
+      .then(() => setStatus("已载入", ""))
+      .catch(() => setStatus("载入失败", "warn"));
+  </script>
+</body>
+</html>

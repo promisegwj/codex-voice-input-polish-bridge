@@ -1,0 +1,33 @@
+# Local runtime data
+.codex-tmp/
+*.log
+*.tmp
+*.jsonl
+
+# Build outputs
+**/bin/
+**/obj/
+**/publish/
+**/publish-self-contained/
+
+# Downloaded packages and upstream working copies
+downloads/
+typewhisper-win/
+
+# Investigation artifacts
+app-main-*.js
+preload.js
+voice-project-settings.json
+
+# Media and generated assets
+*.wav
+*.mp3
+*.mp4
+
+# Editor and OS noise
+.vs/
+.vscode/
+*.user
+*.suo
+Thumbs.db
+Desktop.ini

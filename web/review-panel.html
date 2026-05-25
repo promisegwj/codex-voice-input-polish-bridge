@@ -1,0 +1,393 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Codex 语音输入审核</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f7f9;
+      --panel: #ffffff;
+      --text: #17202a;
+      --muted: #64717f;
+      --line: #d8dee6;
+      --accent: #0b6fcb;
+      --accent-dark: #075da9;
+      --ok: #147a3f;
+      --warn: #8a5a00;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font-family: "Microsoft YaHei UI", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.5;
+    }
+
+    main {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 18px;
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 20px;
+      font-weight: 650;
+    }
+
+    .status {
+      min-width: 110px;
+      color: var(--muted);
+      font-size: 13px;
+      text-align: right;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      min-width: 0;
+    }
+
+    .panel.final {
+      grid-column: 1 / -1;
+    }
+
+    .panel-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 8px;
+    }
+
+    h2 {
+      margin: 0;
+      font-size: 14px;
+      font-weight: 650;
+    }
+
+    .hint {
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    textarea {
+      width: 100%;
+      min-height: 190px;
+      resize: vertical;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 10px;
+      color: var(--text);
+      background: #fff;
+      font: inherit;
+      line-height: 1.55;
+    }
+
+    textarea[readonly] {
+      background: #fafbfc;
+      color: #26313d;
+    }
+
+    #finalText {
+      min-height: 230px;
+      border-color: #aab7c4;
+    }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    button {
+      min-height: 34px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 6px 12px;
+      background: #fff;
+      color: var(--text);
+      font: inherit;
+      cursor: pointer;
+    }
+
+    button.primary {
+      border-color: var(--accent);
+      background: var(--accent);
+      color: #fff;
+    }
+
+    button.primary:hover {
+      background: var(--accent-dark);
+    }
+
+    button:focus-visible,
+    textarea:focus-visible {
+      outline: 2px solid rgba(11, 111, 203, 0.25);
+      outline-offset: 1px;
+    }
+
+    .notes {
+      margin-top: 12px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .notes ul {
+      margin: 6px 0 0;
+      padding-left: 20px;
+    }
+
+    .saved {
+      color: var(--ok);
+    }
+
+    .empty {
+      color: var(--warn);
+    }
+
+    @media (max-width: 800px) {
+      main {
+        padding: 12px;
+      }
+
+      header {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+
+      .status {
+        text-align: left;
+      }
+
+      .grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>Codex 语音输入审核</h1>
+      <div id="status" class="status">等待数据</div>
+    </header>
+
+    <section class="grid">
+      <div class="panel">
+        <div class="panel-head">
+          <h2>Codex 原始识别文本</h2>
+          <span class="hint">只读</span>
+        </div>
+        <textarea id="rawText" readonly></textarea>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h2>中介自动整理文本</h2>
+          <span class="hint">只读</span>
+        </div>
+        <textarea id="polishedText" readonly></textarea>
+      </div>
+
+      <div class="panel final">
+        <div class="panel-head">
+          <h2>最终要表达的文本</h2>
+          <span class="hint">可编辑</span>
+        </div>
+        <textarea id="finalText"></textarea>
+        <div class="actions">
+          <button class="primary" id="save">保存选择</button>
+          <button id="usePolished">使用整理文本</button>
+          <button id="useRaw">使用原始文本</button>
+          <button id="copyFinal">复制最终文本</button>
+          <button id="clearSaved">清除已保存结果</button>
+        </div>
+        <div class="notes">
+          <strong>检测到的优化</strong>
+          <ul id="notes"></ul>
+        </div>
+        <textarea id="reviewResultJson" hidden aria-hidden="true"></textarea>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const STORAGE_KEY = "codexVoiceReviewResult";
+    const rawText = document.getElementById("rawText");
+    const polishedText = document.getElementById("polishedText");
+    const finalText = document.getElementById("finalText");
+    const statusEl = document.getElementById("status");
+    const notesEl = document.getElementById("notes");
+    const reviewResultJson = document.getElementById("reviewResultJson");
+
+    function decodePayload() {
+      const hash = new URLSearchParams(location.hash.replace(/^#/, ""));
+      const encoded = hash.get("payload");
+      if (!encoded) {
+        return {
+          rawText: "",
+          polishedText: "",
+          notes: [],
+          source: "empty"
+        };
+      }
+
+      const base64 = encoded.replace(/-/g, "+").replace(/_/g, "/");
+      const padded = base64.padEnd(Math.ceil(base64.length / 4) * 4, "=");
+      const json = new TextDecoder().decode(Uint8Array.from(atob(padded), c => c.charCodeAt(0)));
+      return JSON.parse(json);
+    }
+
+    function setStatus(text, className) {
+      statusEl.textContent = text;
+      statusEl.className = "status " + (className || "");
+    }
+
+    function renderNotes(notes) {
+      notesEl.innerHTML = "";
+      if (!notes || notes.length === 0) {
+        const li = document.createElement("li");
+        li.textContent = "暂无可归类的优化。";
+        notesEl.appendChild(li);
+        return;
+      }
+
+      for (const note of notes) {
+        const li = document.createElement("li");
+        li.textContent = note;
+        notesEl.appendChild(li);
+      }
+    }
+
+    async function recordFeedback(result) {
+      try {
+        const response = await fetch("/api/feedback", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            ...result,
+            source: "codex_voice_web_review",
+            captureContext: "codex_voice_input"
+          })
+        });
+
+        if (!response.ok) {
+          return { recorded: false, reason: "request_failed" };
+        }
+
+        return await response.json();
+      } catch {
+        return { recorded: false, reason: "api_unavailable" };
+      }
+    }
+
+    async function saveResult(decision) {
+      const value = finalText.value.trim();
+      if (!value) {
+        setStatus("最终文本为空", "empty");
+        finalText.focus();
+        return;
+      }
+
+      const result = {
+        decision,
+        rawText: rawText.value,
+        polishedText: polishedText.value,
+        finalText: value,
+        notes: Array.from(notesEl.querySelectorAll("li")).map(item => item.textContent),
+        savedAt: new Date().toISOString()
+      };
+
+      let serialized = JSON.stringify(result);
+      reviewResultJson.value = serialized;
+
+      try {
+        localStorage.setItem(STORAGE_KEY, serialized);
+      } catch {
+        // The Codex browser automation context may not expose storage consistently.
+      }
+
+      const feedback = await recordFeedback(result);
+      result.feedbackRecorded = Boolean(feedback.recorded);
+      result.feedbackReason = feedback.reason || "";
+      result.feedbackLogPath = feedback.path || "";
+      serialized = JSON.stringify(result);
+      reviewResultJson.value = serialized;
+
+      try {
+        localStorage.setItem(STORAGE_KEY, serialized);
+      } catch {
+        // The Codex browser automation context may not expose storage consistently.
+      }
+
+      document.title = "已保存 - Codex 语音输入审核";
+      setStatus("已保存", "saved");
+    }
+
+    const payload = decodePayload();
+    rawText.value = payload.rawText || "";
+    polishedText.value = payload.polishedText || "";
+    finalText.value = payload.finalText || payload.polishedText || payload.rawText || "";
+    renderNotes(payload.notes || []);
+
+    if (rawText.value || polishedText.value) {
+      setStatus("待确认", "");
+    } else {
+      setStatus("没有载入文本", "empty");
+    }
+
+    document.getElementById("save").addEventListener("click", () => {
+      saveResult("saved");
+    });
+    document.getElementById("usePolished").addEventListener("click", () => {
+      finalText.value = polishedText.value;
+      finalText.focus();
+    });
+    document.getElementById("useRaw").addEventListener("click", () => {
+      finalText.value = rawText.value;
+      finalText.focus();
+    });
+    document.getElementById("copyFinal").addEventListener("click", async () => {
+      await navigator.clipboard.writeText(finalText.value.trim());
+      await saveResult("copied");
+      setStatus("已复制并保存", "saved");
+    });
+    document.getElementById("clearSaved").addEventListener("click", () => {
+      reviewResultJson.value = "";
+      try {
+        localStorage.removeItem(STORAGE_KEY);
+      } catch {
+        // Storage can be unavailable in some embedded browser contexts.
+      }
+      setStatus("已清除", "");
+    });
+  </script>
+</body>
+</html>

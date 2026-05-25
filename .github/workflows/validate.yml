@@ -1,0 +1,48 @@
+name: Validate
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  validate:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Validate JSON
+        shell: pwsh
+        run: |
+          Get-ChildItem ".\config" -Filter *.json | ForEach-Object {
+            Get-Content -Raw -Encoding UTF8 $_.FullName | ConvertFrom-Json | Out-Null
+          }
+
+      - name: Parse PowerShell scripts
+        shell: pwsh
+        run: |
+          Get-ChildItem ".\scripts" -Filter *.ps1 | ForEach-Object {
+            $errors = $null
+            [System.Management.Automation.PSParser]::Tokenize(
+              (Get-Content -Raw -Encoding UTF8 $_.FullName),
+              [ref]$errors
+            ) | Out-Null
+            if ($errors.Count -gt 0) {
+              $errors | Format-List | Out-String | Write-Error
+              throw "PowerShell parse failed: $($_.FullName)"
+            }
+          }
+
+      - name: Build bridge
+        run: dotnet build ".\tools\CodexVoicePromptBridge\CodexVoicePromptBridge.csproj" -c Release
+
+      - name: Build legacy helper
+        run: dotnet build ".\tools\TypeWhisperT2S\TypeWhisperT2S.csproj" -c Release

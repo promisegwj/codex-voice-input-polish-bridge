@@ -1,0 +1,176 @@
+﻿{
+  "version": 2,
+  "purpose": "Layered topic-based onboarding calibration prompts for Codex voice prompt bridge.",
+  "notes": [
+    "This project uses Codex built-in speech recognition, so onboarding should learn language habits from free speech rather than ask users to read fixed text.",
+    "Collect samples across different cognitive-load levels because the same user speaks differently when chatting casually, planning the day, explaining a workflow, or reasoning through a difficult idea.",
+    "Start with casual, broad, low-pressure topics before asking about work tasks or product preferences.",
+    "Each prompt gives a fixed topic, but the user should speak naturally in their own words.",
+    "The bridge can learn text-level habits: filler words, repeated sentence openings, personal task phrasing, common recognition mistakes, protected terms, and context-specific rewrite preferences."
+  ],
+  "stages": [
+    {
+      "id": "low_load_casual",
+      "title": "轻松聊天层",
+      "goal": "采集用户不用明显思考时的自然语速、日常词汇、轻量停顿和低口头禅状态。"
+    },
+    {
+      "id": "medium_load_daily_planning",
+      "title": "日常规划层",
+      "goal": "采集用户回忆、安排、排序时的表达结构和轻度组织语言习惯。"
+    },
+    {
+      "id": "work_task_expression",
+      "title": "工作任务层",
+      "goal": "采集用户给 Codex 下任务、描述问题、提出约束时的表达方式。"
+    },
+    {
+      "id": "high_load_reasoning",
+      "title": "思考推理层",
+      "goal": "采集用户边想边说时的卡顿、修正、补充、转折和抽象概念组织方式。"
+    }
+  ],
+  "topics": [
+    {
+      "id": "casual-weather-status",
+      "stage": "low_load_casual",
+      "cognitiveLoad": "low",
+      "title": "天气和状态",
+      "prompt": "请随便聊一聊今天的天气、你的状态，或者刚才在想什么。想到哪里说到哪里就行。",
+      "targetDurationSeconds": 30,
+      "learns": [
+        "natural conversational openings",
+        "baseline speaking rhythm",
+        "low-load filler frequency",
+        "casual topic transitions"
+      ]
+    },
+    {
+      "id": "casual-food-preference",
+      "stage": "low_load_casual",
+      "cognitiveLoad": "low",
+      "title": "最喜欢的食物",
+      "prompt": "请自然说一说你最喜欢什么食物，简单介绍这种食物的口感和味道，再说说你为什么喜欢它。想到哪里说到哪里就行。",
+      "targetDurationSeconds": 30,
+      "learns": [
+        "casual preference phrasing",
+        "sensory description wording",
+        "relaxed vocabulary",
+        "natural pauses",
+        "comfort-zone wording"
+      ]
+    },
+    {
+      "id": "daily-plan",
+      "stage": "medium_load_daily_planning",
+      "cognitiveLoad": "medium",
+      "title": "今天的计划",
+      "prompt": "请自然说一说你今天大概想做哪些事情，哪些先做、哪些后做，哪些可能会变。",
+      "targetDurationSeconds": 45,
+      "learns": [
+        "planning words",
+        "priority and sequencing words",
+        "mild hesitation patterns",
+        "task grouping"
+      ]
+    },
+    {
+      "id": "simple-self-intro",
+      "stage": "medium_load_daily_planning",
+      "cognitiveLoad": "medium",
+      "title": "简单自我介绍",
+      "prompt": "请用很轻松的方式介绍一下自己，或者介绍一下你平时怎么使用 Codex。",
+      "targetDurationSeconds": 45,
+      "learns": [
+        "self-description style",
+        "habitual sentence patterns",
+        "personal vocabulary",
+        "identity and tool-use wording"
+      ]
+    },
+    {
+      "id": "task-command",
+      "stage": "work_task_expression",
+      "cognitiveLoad": "medium_high",
+      "title": "任务指令",
+      "prompt": "请像平时吩咐 Codex 做事一样，自然说一个包含两到三个要求的任务。",
+      "targetDurationSeconds": 30,
+      "learns": [
+        "multi-request splitting",
+        "command conversion",
+        "negative constraints",
+        "priority and sequencing words"
+      ]
+    },
+    {
+      "id": "bug-report",
+      "stage": "work_task_expression",
+      "cognitiveLoad": "medium_high",
+      "title": "问题反馈",
+      "prompt": "请自然描述一次你觉得语音输入结果不符合预期的情况，包括原来想表达什么、结果哪里不对、你希望怎么修。",
+      "targetDurationSeconds": 45,
+      "learns": [
+        "correction style",
+        "error-report wording",
+        "terms to preserve",
+        "desired fix phrasing"
+      ]
+    },
+    {
+      "id": "workflow-thinking",
+      "stage": "high_load_reasoning",
+      "cognitiveLoad": "high",
+      "title": "工作流程思考",
+      "prompt": "请边想边说一个你正在设计或调整的工作流程，讲清楚为什么这样设计、哪里还不确定、你担心什么。",
+      "targetDurationSeconds": 60,
+      "learns": [
+        "high-load filler frequency",
+        "self-correction patterns",
+        "reasoning transitions",
+        "uncertainty wording",
+        "long-form structure"
+      ]
+    },
+    {
+      "id": "abstract-tradeoff",
+      "stage": "high_load_reasoning",
+      "cognitiveLoad": "high",
+      "title": "取舍和判断",
+      "prompt": "请自然说一段你最近在权衡的事情，比如两个方案怎么选、各自的优缺点、你还需要什么信息。",
+      "targetDurationSeconds": 60,
+      "learns": [
+        "tradeoff language",
+        "conditional reasoning",
+        "nested clauses",
+        "hesitation and repair patterns"
+      ]
+    },
+    {
+      "id": "rewrite-preference",
+      "stage": "work_task_expression",
+      "cognitiveLoad": "medium_high",
+      "title": "整理偏好",
+      "prompt": "请自然说明你希望系统怎么整理你的口述文本，哪些口头禅要删，哪些表达不要擅自改。",
+      "targetDurationSeconds": 45,
+      "learns": [
+        "rewrite preferences",
+        "filler words to remove",
+        "protected phrases",
+        "style boundaries"
+      ]
+    },
+    {
+      "id": "project-vocabulary",
+      "stage": "work_task_expression",
+      "cognitiveLoad": "medium_high",
+      "title": "项目词汇",
+      "prompt": "请自然介绍这个项目里你常说的工具名、插件名、热键名和容易识别错的词。",
+      "targetDurationSeconds": 30,
+      "learns": [
+        "project-specific vocabulary",
+        "recognition correction pairs",
+        "English term casing"
+      ]
+    }
+  ]
+}

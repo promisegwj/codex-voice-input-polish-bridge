@@ -1,0 +1,1731 @@
+﻿[CmdletBinding()]
+param(
+    [int]$Port = 8793,
+
+    [string]$WebRoot = '',
+
+    [string]$SettingsPath = '',
+
+    [string]$FeedbackDir = '',
+
+    [string]$TranscriptionHistoryPath = '',
+
+    [int]$MaxTranscriptionAgeSeconds = 900
+)
+
+$ErrorActionPreference = 'Stop'
+
+$scriptRoot = if ([string]::IsNullOrWhiteSpace($PSScriptRoot)) {
+    Split-Path -Parent $MyInvocation.MyCommand.Path
+}
+else {
+    $PSScriptRoot
+}
+
+if ([string]::IsNullOrWhiteSpace($WebRoot)) {
+    $WebRoot = Join-Path $scriptRoot '..\web'
+}
+
+$projectRoot = (Resolve-Path -LiteralPath (Join-Path $scriptRoot '..')).Path
+$resolvedWebRoot = (Resolve-Path -LiteralPath $WebRoot).Path
+
+if ([string]::IsNullOrWhiteSpace($SettingsPath)) {
+    $SettingsPath = Join-Path $projectRoot 'config\voice-feedback-settings.json'
+}
+
+if ([string]::IsNullOrWhiteSpace($TranscriptionHistoryPath)) {
+    $TranscriptionHistoryPath = Join-Path $env:USERPROFILE '.codex\transcription-history.jsonl'
+}
+
+$listener = [System.Net.HttpListener]::new()
+$prefix = "http://127.0.0.1:$Port/"
+$listener.Prefixes.Add($prefix)
+$listener.Start()
+
+$script:LastPasteTarget = $null
+
+function Ensure-FocusNativeMethods {
+    if ('CodexVoiceFocus.NativeMethods' -as [type]) {
+        return
+    }
+
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+
+namespace CodexVoiceFocus
+{
+    public static class NativeMethods
+    {
+        [DllImport("user32.dll")]
+        public static extern IntPtr GetForegroundWindow();
+
+        [DllImport("user32.dll")]
+        public static extern bool SetForegroundWindow(IntPtr hWnd);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        public static extern int GetWindowTextW(IntPtr hWnd, StringBuilder text, int count);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        public static extern int GetWindowTextLengthW(IntPtr hWnd);
+    }
+}
+'@
+}
+
+function Get-WindowTitle {
+    param([Parameter(Mandatory = $true)][IntPtr]$Hwnd)
+
+    Ensure-FocusNativeMethods
+    $length = [CodexVoiceFocus.NativeMethods]::GetWindowTextLengthW($Hwnd)
+    if ($length -le 0) {
+        return ''
+    }
+
+    $builder = [System.Text.StringBuilder]::new($length + 1)
+    $result = [CodexVoiceFocus.NativeMethods]::GetWindowTextW($Hwnd, $builder, $builder.Capacity)
+    if ($result -le 0) {
+        return ''
+    }
+
+    return $builder.ToString()
+}
+
+function Capture-PasteTarget {
+    param([string]$Reason = 'manual')
+
+    Ensure-FocusNativeMethods
+    $hwnd = [CodexVoiceFocus.NativeMethods]::GetForegroundWindow()
+    if ($hwnd -eq [IntPtr]::Zero) {
+        return $null
+    }
+
+    $processId = [uint32]0
+    [void][CodexVoiceFocus.NativeMethods]::GetWindowThreadProcessId($hwnd, [ref]$processId)
+
+    $processName = ''
+    if ($processId -gt 0) {
+        try {
+            $processName = (Get-Process -Id ([int]$processId) -ErrorAction Stop).ProcessName
+        }
+        catch {
+            $processName = ''
+        }
+    }
+
+    $target = [pscustomobject]@{
+        hwnd = $hwnd.ToInt64()
+        processId = [int64]$processId
+        processName = $processName
+        title = Get-WindowTitle -Hwnd $hwnd
+        capturedAt = (Get-Date).ToString('o')
+        reason = $Reason
+    }
+
+    $script:LastPasteTarget = $target
+    return $target
+}
+
+function Get-PasteTargetSnapshot {
+    if ($null -eq $script:LastPasteTarget) {
+        return $null
+    }
+
+    return [pscustomobject]@{
+        hwnd = $script:LastPasteTarget.hwnd
+        processId = $script:LastPasteTarget.processId
+        processName = $script:LastPasteTarget.processName
+        title = $script:LastPasteTarget.title
+        capturedAt = $script:LastPasteTarget.capturedAt
+        reason = $script:LastPasteTarget.reason
+    }
+}
+
+function Send-TextResponse {
+    param(
+        [Parameter(Mandatory = $true)]$Response,
+        [Parameter(Mandatory = $true)][string]$Text,
+        [string]$ContentType = 'text/plain; charset=utf-8',
+        [int]$StatusCode = 200
+    )
+
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($Text)
+    $Response.StatusCode = $StatusCode
+    $Response.ContentType = $ContentType
+    $Response.ContentLength64 = $bytes.Length
+    $Response.OutputStream.Write($bytes, 0, $bytes.Length)
+    $Response.OutputStream.Close()
+}
+
+function Send-JsonResponse {
+    param(
+        [Parameter(Mandatory = $true)]$Response,
+        [Parameter(Mandatory = $true)]$Value,
+        [int]$StatusCode = 200
+    )
+
+    $json = $Value | ConvertTo-Json -Depth 10
+    Send-TextResponse -Response $Response -Text $json -ContentType 'application/json; charset=utf-8' -StatusCode $StatusCode
+}
+
+function Read-RequestBody {
+    param([Parameter(Mandatory = $true)]$Request)
+
+    $reader = [System.IO.StreamReader]::new($Request.InputStream, [System.Text.Encoding]::UTF8)
+    try {
+        return $reader.ReadToEnd()
+    }
+    finally {
+        $reader.Dispose()
+    }
+}
+
+function Resolve-ProjectPath {
+    param([Parameter(Mandatory = $true)][string]$PathValue)
+
+    if ([System.IO.Path]::IsPathRooted($PathValue)) {
+        return $PathValue
+    }
+
+    return (Join-Path $projectRoot $PathValue)
+}
+
+function Get-DefaultSettings {
+    return [pscustomobject]@{
+        version = 1
+        feedbackLearning = [pscustomobject]@{
+            enabled = $false
+            captureOnlyWhenWebReviewSaves = $true
+            dailyIterationTime = '00:00'
+            storageDir = '.codex-tmp/voice-feedback'
+            generatedProfilePath = '.codex-tmp/voice-feedback/generated/voice-feedback-learning.generated.json'
+            maxTextLength = 4000
+            retentionDays = 30
+            maxTotalStorageMb = 20
+            maxRecordsPerDay = 200
+            cleanupAfterSave = $true
+            cleanupAfterDailyIteration = $true
+            allowKeyboardMouseMonitoring = $false
+        }
+        fixedEntry = [pscustomobject]@{
+            enabled = $true
+            url = "http://127.0.0.1:$Port/"
+            autoStartWithCodex = $false
+        }
+        activeCalibration = [pscustomobject]@{
+            voiceHotkey = '^+d'
+            voiceHotkeyLabel = 'Ctrl+Shift+D'
+            autoImportDelaySeconds = 8
+            pasteDelaySeconds = 0
+            autoApplyEnabled = $false
+            autoApplyPollMilliseconds = 500
+            defaultRewriteRule = '先判断原始口述的真实意图和任务边界；保留事实、否定、时间、数字、路径、文件名、专有名词和条件，不新增原文没有的信息。删除不承载意义的口头禅、重复句、犹豫词和自我打断；对“不是 A，是 B”“不对，改成 B”以后者为准。将“你能不能/是不是可以”改为直接可执行请求，但真正的可行性询问要保留为问题。多件事按 1、2、3 拆分，每项写成“动作 + 对象 + 验证/交付要求”。长句按意图断句，使用规范中文标点；保留必要的语气和不确定性，关键歧义标为“需确认”。输出应简洁、清楚、可执行，适合直接发给 Codex；不要额外添加固定标题。'
+        }
+    }
+}
+
+function Read-Settings {
+    if (-not (Test-Path -LiteralPath $SettingsPath)) {
+        return Get-DefaultSettings
+    }
+
+    try {
+        $settings = Get-Content -Raw -Encoding UTF8 -LiteralPath $SettingsPath | ConvertFrom-Json
+        $defaults = Get-DefaultSettings
+
+        if (-not $settings.feedbackLearning) {
+            $settings | Add-Member -MemberType NoteProperty -Name feedbackLearning -Value $defaults.feedbackLearning
+        }
+
+        foreach ($property in $defaults.feedbackLearning.PSObject.Properties) {
+            if (-not $settings.feedbackLearning.PSObject.Properties.Item($property.Name)) {
+                $settings.feedbackLearning | Add-Member -MemberType NoteProperty -Name $property.Name -Value $property.Value
+            }
+        }
+
+        if (-not $settings.fixedEntry) {
+            $settings | Add-Member -MemberType NoteProperty -Name fixedEntry -Value $defaults.fixedEntry
+        }
+
+        if (-not $settings.activeCalibration) {
+            $settings | Add-Member -MemberType NoteProperty -Name activeCalibration -Value $defaults.activeCalibration
+        }
+
+        if (-not $settings.activeCalibration.PSObject.Properties.Item('defaultRewriteRule')) {
+            $settings.activeCalibration | Add-Member -MemberType NoteProperty -Name defaultRewriteRule -Value $defaults.activeCalibration.defaultRewriteRule
+        }
+
+        if (-not $settings.activeCalibration.PSObject.Properties.Item('voiceHotkey')) {
+            $settings.activeCalibration | Add-Member -MemberType NoteProperty -Name voiceHotkey -Value $defaults.activeCalibration.voiceHotkey
+        }
+
+        if (-not $settings.activeCalibration.PSObject.Properties.Item('voiceHotkeyLabel')) {
+            $settings.activeCalibration | Add-Member -MemberType NoteProperty -Name voiceHotkeyLabel -Value $defaults.activeCalibration.voiceHotkeyLabel
+        }
+
+        if (-not $settings.activeCalibration.PSObject.Properties.Item('autoImportDelaySeconds')) {
+            $settings.activeCalibration | Add-Member -MemberType NoteProperty -Name autoImportDelaySeconds -Value $defaults.activeCalibration.autoImportDelaySeconds
+        }
+
+        if (-not $settings.activeCalibration.PSObject.Properties.Item('pasteDelaySeconds')) {
+            $settings.activeCalibration | Add-Member -MemberType NoteProperty -Name pasteDelaySeconds -Value $defaults.activeCalibration.pasteDelaySeconds
+        }
+
+        if (-not $settings.activeCalibration.PSObject.Properties.Item('autoApplyEnabled')) {
+            $settings.activeCalibration | Add-Member -MemberType NoteProperty -Name autoApplyEnabled -Value $defaults.activeCalibration.autoApplyEnabled
+        }
+
+        if (-not $settings.activeCalibration.PSObject.Properties.Item('autoApplyPollMilliseconds')) {
+            $settings.activeCalibration | Add-Member -MemberType NoteProperty -Name autoApplyPollMilliseconds -Value $defaults.activeCalibration.autoApplyPollMilliseconds
+        }
+
+        return $settings
+    }
+    catch {
+        return Get-DefaultSettings
+    }
+}
+
+function Save-Settings {
+    param([Parameter(Mandatory = $true)]$Settings)
+
+    $parent = Split-Path -Parent $SettingsPath
+    if (-not [string]::IsNullOrWhiteSpace($parent) -and -not (Test-Path -LiteralPath $parent)) {
+        New-Item -ItemType Directory -Path $parent | Out-Null
+    }
+
+    $Settings | ConvertTo-Json -Depth 10 | Set-Content -Encoding UTF8 -LiteralPath $SettingsPath
+}
+
+function Get-ClampedInt {
+    param(
+        [object]$Value,
+        [int]$Default,
+        [int]$Min,
+        [int]$Max
+    )
+
+    $parsed = $Default
+    if ($null -ne $Value) {
+        try {
+            $parsed = [int]$Value
+        }
+        catch {
+            $parsed = $Default
+        }
+    }
+
+    if ($parsed -lt $Min) {
+        return $Min
+    }
+
+    if ($parsed -gt $Max) {
+        return $Max
+    }
+
+    return $parsed
+}
+
+function Merge-Settings {
+    param([Parameter(Mandatory = $true)]$Incoming)
+
+    $settings = Read-Settings
+    $learning = $settings.feedbackLearning
+    $fixedEntry = $settings.fixedEntry
+    $activeCalibration = $settings.activeCalibration
+
+    if ($Incoming.feedbackLearning) {
+        if ($null -ne $Incoming.feedbackLearning.enabled) {
+            $learning.enabled = [bool]$Incoming.feedbackLearning.enabled
+        }
+
+        if ($Incoming.feedbackLearning.dailyIterationTime -match '^\d{2}:\d{2}$') {
+            $learning.dailyIterationTime = [string]$Incoming.feedbackLearning.dailyIterationTime
+        }
+
+        if ($null -ne $Incoming.feedbackLearning.retentionDays) {
+            $learning.retentionDays = Get-ClampedInt -Value $Incoming.feedbackLearning.retentionDays -Default 30 -Min 1 -Max 3650
+        }
+
+        if ($null -ne $Incoming.feedbackLearning.maxTotalStorageMb) {
+            $learning.maxTotalStorageMb = Get-ClampedInt -Value $Incoming.feedbackLearning.maxTotalStorageMb -Default 20 -Min 1 -Max 1024
+        }
+
+        if ($null -ne $Incoming.feedbackLearning.maxRecordsPerDay) {
+            $learning.maxRecordsPerDay = Get-ClampedInt -Value $Incoming.feedbackLearning.maxRecordsPerDay -Default 200 -Min 10 -Max 10000
+        }
+    }
+
+    $learning.captureOnlyWhenWebReviewSaves = $true
+    $learning.cleanupAfterSave = $true
+    $learning.cleanupAfterDailyIteration = $true
+    $learning.allowKeyboardMouseMonitoring = $false
+
+    if ($Incoming.fixedEntry) {
+        if ($null -ne $Incoming.fixedEntry.enabled) {
+            $fixedEntry.enabled = [bool]$Incoming.fixedEntry.enabled
+        }
+
+        if ($null -ne $Incoming.fixedEntry.autoStartWithCodex) {
+            $fixedEntry.autoStartWithCodex = [bool]$Incoming.fixedEntry.autoStartWithCodex
+        }
+    }
+
+    $fixedEntry.url = "http://127.0.0.1:$Port/"
+
+    if ($Incoming.activeCalibration) {
+        if ($null -ne $Incoming.activeCalibration.defaultRewriteRule) {
+            $activeCalibration.defaultRewriteRule = Limit-Text -Value $Incoming.activeCalibration.defaultRewriteRule -MaxLength 1000
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace([string]$Incoming.activeCalibration.voiceHotkey)) {
+            $activeCalibration.voiceHotkey = [string]$Incoming.activeCalibration.voiceHotkey
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace([string]$Incoming.activeCalibration.voiceHotkeyLabel)) {
+            $activeCalibration.voiceHotkeyLabel = [string]$Incoming.activeCalibration.voiceHotkeyLabel
+        }
+
+        if ($null -ne $Incoming.activeCalibration.autoImportDelaySeconds) {
+            $delaySeconds = [int]$Incoming.activeCalibration.autoImportDelaySeconds
+            if ($delaySeconds -lt 2) {
+                $delaySeconds = 2
+            }
+            elseif ($delaySeconds -gt 60) {
+                $delaySeconds = 60
+            }
+
+            $activeCalibration.autoImportDelaySeconds = $delaySeconds
+        }
+
+        if ($null -ne $Incoming.activeCalibration.pasteDelaySeconds) {
+            $pasteDelaySeconds = [int]$Incoming.activeCalibration.pasteDelaySeconds
+            if ($pasteDelaySeconds -lt 0) {
+                $pasteDelaySeconds = 0
+            }
+            elseif ($pasteDelaySeconds -gt 10) {
+                $pasteDelaySeconds = 10
+            }
+
+            $activeCalibration.pasteDelaySeconds = $pasteDelaySeconds
+        }
+
+        if ($null -ne $Incoming.activeCalibration.autoApplyEnabled) {
+            $activeCalibration.autoApplyEnabled = [bool]$Incoming.activeCalibration.autoApplyEnabled
+        }
+
+        if ($null -ne $Incoming.activeCalibration.autoApplyPollMilliseconds) {
+            $pollMilliseconds = [int]$Incoming.activeCalibration.autoApplyPollMilliseconds
+            if ($pollMilliseconds -lt 500) {
+                $pollMilliseconds = 500
+            }
+            elseif ($pollMilliseconds -gt 5000) {
+                $pollMilliseconds = 5000
+            }
+
+            $activeCalibration.autoApplyPollMilliseconds = $pollMilliseconds
+        }
+    }
+
+    Save-Settings -Settings $settings
+    return $settings
+}
+
+function Limit-Text {
+    param(
+        [object]$Value,
+        [int]$MaxLength
+    )
+
+    $text = if ($null -eq $Value) { '' } else { [string]$Value }
+    if ($text.Length -le $MaxLength) {
+        return $text
+    }
+
+    return $text.Substring(0, $MaxLength)
+}
+
+function Read-LatestCodexTranscription {
+    param(
+        [int64]$AfterCreatedAtMs = 0,
+        [int]$MaxAgeSeconds = $MaxTranscriptionAgeSeconds
+    )
+
+    if (-not (Test-Path -LiteralPath $TranscriptionHistoryPath)) {
+        return [pscustomobject]@{
+            found = $false
+            reason = 'history_file_missing'
+            text = ''
+            length = 0
+            historyPath = $TranscriptionHistoryPath
+            source = 'codex_transcription_history'
+        }
+    }
+
+    $latest = $null
+    foreach ($line in Get-Content -LiteralPath $TranscriptionHistoryPath -Encoding UTF8 -Tail 100) {
+        if ([string]::IsNullOrWhiteSpace($line)) {
+            continue
+        }
+
+        try {
+            $record = $line | ConvertFrom-Json
+        }
+        catch {
+            continue
+        }
+
+        $text = if ($record.PSObject.Properties.Item('text')) { [string]$record.text } else { '' }
+        if ([string]::IsNullOrWhiteSpace($text)) {
+            continue
+        }
+
+        $createdAtMs = if ($record.PSObject.Properties.Item('createdAtMs')) { [int64]$record.createdAtMs } else { 0 }
+        if ($AfterCreatedAtMs -gt 0 -and $createdAtMs -le $AfterCreatedAtMs) {
+            continue
+        }
+
+        if ($null -eq $latest -or $createdAtMs -gt [int64]$latest.createdAtMs) {
+            $latest = [pscustomobject]@{
+                id = if ($record.PSObject.Properties.Item('id')) { [string]$record.id } else { '' }
+                createdAtMs = $createdAtMs
+                text = $text
+            }
+        }
+    }
+
+    if ($null -eq $latest) {
+        return [pscustomobject]@{
+            found = $false
+            reason = if ($AfterCreatedAtMs -gt 0) { 'no_new_transcription' } else { 'no_transcription_text' }
+            text = ''
+            length = 0
+            afterCreatedAtMs = $AfterCreatedAtMs
+            historyPath = $TranscriptionHistoryPath
+            source = 'codex_transcription_history'
+        }
+    }
+
+    $nowMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+    $ageSeconds = if ($latest.createdAtMs -gt 0) {
+        [int][Math]::Max(0, [Math]::Floor(($nowMs - $latest.createdAtMs) / 1000))
+    }
+    else {
+        -1
+    }
+
+    $createdAtLocal = if ($latest.createdAtMs -gt 0) {
+        [DateTimeOffset]::FromUnixTimeMilliseconds($latest.createdAtMs).LocalDateTime.ToString('yyyy-MM-dd HH:mm:ss')
+    }
+    else {
+        ''
+    }
+
+    $pasteTarget = if (-not ($MaxAgeSeconds -gt 0 -and $ageSeconds -gt $MaxAgeSeconds)) {
+        Capture-PasteTarget -Reason 'latest_codex_transcription'
+    }
+    else {
+        Get-PasteTargetSnapshot
+    }
+
+    return [pscustomobject]@{
+        found = $true
+        stale = ($MaxAgeSeconds -gt 0 -and $ageSeconds -gt $MaxAgeSeconds)
+        text = Limit-Text -Value $latest.text -MaxLength 4000
+        length = ([string]$latest.text).Length
+        id = $latest.id
+        createdAtMs = $latest.createdAtMs
+        createdAtLocal = $createdAtLocal
+        ageSeconds = $ageSeconds
+        maxAgeSeconds = $MaxAgeSeconds
+        afterCreatedAtMs = $AfterCreatedAtMs
+        historyPath = $TranscriptionHistoryPath
+        source = 'codex_transcription_history'
+        monitoring = $false
+        pasteTarget = $pasteTarget
+    }
+}
+
+function Normalize-BridgeOutput {
+    param([string]$Text)
+
+    $cleaned = if ($null -eq $Text) { '' } else { $Text.Trim() }
+    $cleaned = [System.Text.RegularExpressions.Regex]::Replace($cleaned, '^\s*请执行[:：]\s*', '')
+    $cleaned = [System.Text.RegularExpressions.Regex]::Replace($cleaned, '^\s*请根据以下口述内容理解我的需求，并直接执行[:：]\s*', '')
+    return $cleaned.Trim()
+}
+
+function Invoke-TextBridge {
+    param(
+        [Parameter(Mandatory = $true)][string]$Text,
+        [string]$RewriteRule = ''
+    )
+
+    $bridgeExe = Join-Path $projectRoot 'tools\CodexVoicePromptBridge\publish-self-contained\CodexVoicePromptBridge.exe'
+    if (-not (Test-Path -LiteralPath $bridgeExe)) {
+        throw "Bridge executable was not found: $bridgeExe"
+    }
+
+    $inputFile = [System.IO.Path]::GetTempFileName()
+    $outputFile = [System.IO.Path]::GetTempFileName()
+
+    try {
+        [System.IO.File]::WriteAllText($inputFile, $Text, [System.Text.UTF8Encoding]::new($false))
+        $bridgeArgs = @('--input-file', $inputFile, '--output-file', $outputFile)
+        if (-not [string]::IsNullOrWhiteSpace($RewriteRule)) {
+            $bridgeArgs += @('--rewrite-rule', $RewriteRule)
+        }
+
+        & $bridgeExe @bridgeArgs
+
+        if ($LASTEXITCODE -ne 0) {
+            throw "Bridge executable failed with exit code $LASTEXITCODE."
+        }
+
+        $outputText = [System.IO.File]::ReadAllText($outputFile, [System.Text.Encoding]::UTF8)
+        return Normalize-BridgeOutput -Text $outputText
+    }
+    finally {
+        Remove-Item -LiteralPath $inputFile, $outputFile -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Get-GeneratedFeedbackProfilePath {
+    $settings = Read-Settings
+    $profilePath = if ($settings.feedbackLearning -and $settings.feedbackLearning.generatedProfilePath) {
+        [string]$settings.feedbackLearning.generatedProfilePath
+    }
+    else {
+        '.codex-tmp/voice-feedback/generated/voice-feedback-learning.generated.json'
+    }
+
+    return Resolve-ProjectPath $profilePath
+}
+
+function Apply-GeneratedFeedbackProfile {
+    param([Parameter(Mandatory = $true)][string]$Text)
+
+    $profilePath = Get-GeneratedFeedbackProfilePath
+    if (-not (Test-Path -LiteralPath $profilePath)) {
+        return [pscustomobject]@{
+            text = $Text
+            applied = $false
+            appliedCount = 0
+            candidatesSeen = 0
+            profilePath = $profilePath
+            sourceDate = ''
+        }
+    }
+
+    try {
+        $profile = Get-Content -Raw -Encoding UTF8 -LiteralPath $profilePath | ConvertFrom-Json
+    }
+    catch {
+        return [pscustomobject]@{
+            text = $Text
+            applied = $false
+            appliedCount = 0
+            candidatesSeen = 0
+            profilePath = $profilePath
+            sourceDate = ''
+            reason = 'profile_parse_failed'
+        }
+    }
+
+    $candidates = @($profile.replacementCandidates)
+    $updated = $Text
+    $appliedCount = 0
+
+    foreach ($candidate in ($candidates | Sort-Object -Property @{ Expression = { if ($_.autoFragment) { ([string]$_.autoFragment).Length } else { 0 } }; Descending = $true }, @{ Expression = 'count'; Descending = $true })) {
+        $autoFragment = if ($candidate.PSObject.Properties.Item('autoFragment')) { [string]$candidate.autoFragment } else { '' }
+        $preferredFragment = if ($candidate.PSObject.Properties.Item('preferredFragment')) { [string]$candidate.preferredFragment } else { '' }
+
+        if ([string]::IsNullOrWhiteSpace($autoFragment)) {
+            continue
+        }
+
+        if ($autoFragment.Length -gt 120 -or $autoFragment.Trim() -eq $preferredFragment.Trim()) {
+            continue
+        }
+
+        if ($updated.IndexOf($autoFragment, [System.StringComparison]::Ordinal) -ge 0) {
+            $updated = $updated.Replace($autoFragment, $preferredFragment)
+            $appliedCount++
+        }
+    }
+
+    return [pscustomobject]@{
+        text = $updated
+        applied = ($appliedCount -gt 0)
+        appliedCount = $appliedCount
+        candidatesSeen = $candidates.Count
+        profilePath = $profilePath
+        sourceDate = if ($profile.PSObject.Properties.Item('sourceDate')) { [string]$profile.sourceDate } else { '' }
+    }
+}
+
+function Invoke-VoiceHotkey {
+    param([bool]$DryRun = $false)
+
+    $settings = Read-Settings
+    $hotkey = if ($settings.activeCalibration.voiceHotkey) {
+        [string]$settings.activeCalibration.voiceHotkey
+    }
+    else {
+        '^+d'
+    }
+
+    if ($DryRun) {
+        return [pscustomobject]@{
+            sent = $false
+            dryRun = $true
+            hotkey = $hotkey
+            label = [string]$settings.activeCalibration.voiceHotkeyLabel
+        }
+    }
+
+    $escapedHotkey = $hotkey.Replace("'", "''")
+    $encodedCommand = "Add-Type -AssemblyName System.Windows.Forms; Start-Sleep -Milliseconds 200; [System.Windows.Forms.SendKeys]::SendWait('$escapedHotkey')"
+
+    Start-Process `
+        -FilePath 'powershell.exe' `
+        -WindowStyle Hidden `
+        -ArgumentList @(
+            '-STA',
+            '-NoProfile',
+            '-ExecutionPolicy', 'Bypass',
+            '-Command', $encodedCommand
+        ) | Out-Null
+
+    return [pscustomobject]@{
+        sent = $true
+        hotkey = $hotkey
+        label = [string]$settings.activeCalibration.voiceHotkeyLabel
+    }
+}
+
+function Read-ClipboardText {
+    $tempFile = [System.IO.Path]::GetTempFileName()
+    $escapedTempFile = $tempFile.Replace("'", "''")
+    $command = @(
+        'Add-Type -AssemblyName System.Windows.Forms',
+        '$text = if ([System.Windows.Forms.Clipboard]::ContainsText()) { [System.Windows.Forms.Clipboard]::GetText() } else { '''' }',
+        "[System.IO.File]::WriteAllText('$escapedTempFile', `$text, [System.Text.UTF8Encoding]::new(`$false))"
+    ) -join [Environment]::NewLine
+
+    try {
+        Start-Process `
+            -FilePath 'powershell.exe' `
+            -WindowStyle Hidden `
+            -Wait `
+            -ArgumentList @(
+                '-STA',
+                '-NoProfile',
+                '-ExecutionPolicy', 'Bypass',
+                '-Command', $command
+            ) | Out-Null
+
+        return [System.IO.File]::ReadAllText($tempFile, [System.Text.Encoding]::UTF8)
+    }
+    finally {
+        Remove-Item -LiteralPath $tempFile -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Write-ClipboardText {
+    param([Parameter(Mandatory = $true)][string]$Text)
+
+    if ([Threading.Thread]::CurrentThread.GetApartmentState() -eq 'STA') {
+        Add-Type -AssemblyName System.Windows.Forms
+        for ($i = 0; $i -lt 8; $i++) {
+            try {
+                [System.Windows.Forms.Clipboard]::SetText($Text)
+                return
+            }
+            catch {
+                Start-Sleep -Milliseconds 40
+            }
+        }
+    }
+
+    $tempFile = [System.IO.Path]::GetTempFileName()
+    $escapedTempFile = $tempFile.Replace("'", "''")
+    $command = @(
+        'Add-Type -AssemblyName System.Windows.Forms',
+        "`$text = [System.IO.File]::ReadAllText('$escapedTempFile', [System.Text.Encoding]::UTF8)",
+        '[System.Windows.Forms.Clipboard]::SetText($text)'
+    ) -join [Environment]::NewLine
+
+    try {
+        [System.IO.File]::WriteAllText($tempFile, $Text, [System.Text.UTF8Encoding]::new($false))
+        Start-Process `
+            -FilePath 'powershell.exe' `
+            -WindowStyle Hidden `
+            -Wait `
+            -ArgumentList @(
+                '-STA',
+                '-NoProfile',
+                '-ExecutionPolicy', 'Bypass',
+                '-Command', $command
+            ) | Out-Null
+    }
+    finally {
+        Remove-Item -LiteralPath $tempFile -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Get-PasteTargetInfo {
+    param($Target = $null)
+
+    $targetHwnd = 0
+    if ($null -ne $Target -and $Target.PSObject.Properties.Item('hwnd')) {
+        $targetHwnd = [int64]$Target.hwnd
+    }
+
+    $targetProcessName = ''
+    if ($null -ne $Target -and $Target.PSObject.Properties.Item('processName')) {
+        $targetProcessName = [string]$Target.processName
+    }
+
+    $targetTitle = ''
+    if ($null -ne $Target -and $Target.PSObject.Properties.Item('title')) {
+        $targetTitle = [string]$Target.title
+    }
+
+    return [pscustomobject]@{
+        hwnd = $targetHwnd
+        processName = $targetProcessName
+        title = $targetTitle
+        requiresCodexComposerFocus = ($targetProcessName -ieq 'Codex' -or $targetTitle -eq 'Codex')
+    }
+}
+
+function Focus-PasteTarget {
+    param([Parameter(Mandatory = $true)]$Info)
+
+    if ([int64]$Info.hwnd -le 0) {
+        return [pscustomobject]@{
+            focused = $false
+            skippedReason = 'missing_paste_target'
+            codexComposerFocusAttempted = $false
+        }
+    }
+
+    Ensure-FocusNativeMethods
+    [CodexVoiceFocus.NativeMethods]::SetForegroundWindow([IntPtr][int64]$Info.hwnd) | Out-Null
+    Start-Sleep -Milliseconds 40
+
+    if (-not [bool]$Info.requiresCodexComposerFocus) {
+        return [pscustomobject]@{
+            focused = $true
+            skippedReason = ''
+            codexComposerFocusAttempted = $false
+        }
+    }
+
+    $codexComposerFocused = $false
+    try {
+        Add-Type -AssemblyName UIAutomationClient
+        Add-Type -AssemblyName UIAutomationTypes
+        $root = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr][int64]$Info.hwnd)
+        if ($null -ne $root) {
+            $all = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
+            $best = $null
+            $bestY = [double]::NegativeInfinity
+            foreach ($element in $all) {
+                try {
+                    $className = $element.Current.ClassName
+                    $rect = $element.Current.BoundingRectangle
+                    if ($element.Current.IsKeyboardFocusable -and -not $element.Current.IsOffscreen -and $className -like 'ProseMirror*' -and $rect.Width -gt 100 -and $rect.Height -gt 20) {
+                        if ($rect.Y -gt $bestY) {
+                            $best = $element
+                            $bestY = $rect.Y
+                        }
+                    }
+                }
+                catch {
+                }
+            }
+
+            if ($null -ne $best) {
+                $best.SetFocus()
+                Start-Sleep -Milliseconds 50
+                $focused = [System.Windows.Automation.AutomationElement]::FocusedElement
+                if ($null -ne $focused -and $focused.Current.ClassName -like 'ProseMirror*') {
+                    $codexComposerFocused = $true
+                }
+            }
+        }
+    }
+    catch {
+    }
+
+    return [pscustomobject]@{
+        focused = $codexComposerFocused
+        skippedReason = if ($codexComposerFocused) { '' } else { 'codex_composer_focus_failed' }
+        codexComposerFocusAttempted = $true
+    }
+}
+
+function Send-PasteKeys {
+    param([bool]$ReplaceExisting = $false)
+
+    Add-Type -AssemblyName System.Windows.Forms
+    if ($ReplaceExisting) {
+        [System.Windows.Forms.SendKeys]::SendWait('^a')
+        Start-Sleep -Milliseconds 60
+        [System.Windows.Forms.SendKeys]::SendWait('^v')
+        return
+    }
+
+    [System.Windows.Forms.SendKeys]::SendWait('^v')
+}
+
+function Start-DelayedPaste {
+    param(
+        [int]$DelaySeconds = 0,
+        [bool]$ReplaceExisting = $false,
+        $Target = $null
+    )
+
+    if ($DelaySeconds -lt 0) {
+        $DelaySeconds = 0
+    }
+    elseif ($DelaySeconds -gt 10) {
+        $DelaySeconds = 10
+    }
+
+    $delayMs = $DelaySeconds * 1000
+    $targetInfo = Get-PasteTargetInfo -Target $Target
+    $requiresCodexComposerFocusLiteral = if ([bool]$targetInfo.requiresCodexComposerFocus) { '$true' } else { '$false' }
+
+    if ($DelaySeconds -eq 0 -and [Threading.Thread]::CurrentThread.GetApartmentState() -eq 'STA') {
+        $focusResult = Focus-PasteTarget -Info $targetInfo
+        if (-not [bool]$focusResult.focused) {
+            return [pscustomobject]@{
+                started = $false
+                pastedImmediately = $false
+                mode = 'direct_sta'
+                skippedReason = [string]$focusResult.skippedReason
+                focusResult = $focusResult
+            }
+        }
+
+        Send-PasteKeys -ReplaceExisting $ReplaceExisting
+        return [pscustomobject]@{
+            started = $true
+            pastedImmediately = $true
+            mode = 'direct_sta'
+            skippedReason = ''
+            focusResult = $focusResult
+        }
+    }
+
+    $sendKeys = if ($ReplaceExisting) {
+        "[System.Windows.Forms.SendKeys]::SendWait('^a'); Start-Sleep -Milliseconds 60; [System.Windows.Forms.SendKeys]::SendWait('^v')"
+    }
+    else {
+        "[System.Windows.Forms.SendKeys]::SendWait('^v')"
+    }
+
+    $focusCode = if ([int64]$targetInfo.hwnd -gt 0) {
+        @"
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class CodexVoicePasteFocus
+{
+    [DllImport("user32.dll")]
+    public static extern bool SetForegroundWindow(IntPtr hWnd);
+}
+'@
+[CodexVoicePasteFocus]::SetForegroundWindow([IntPtr]$($targetInfo.hwnd)) | Out-Null
+Start-Sleep -Milliseconds 40
+`$requiresCodexComposerFocus = $requiresCodexComposerFocusLiteral
+if (`$requiresCodexComposerFocus) {
+    `$codexComposerFocused = `$false
+    try {
+        Add-Type -AssemblyName UIAutomationClient
+        Add-Type -AssemblyName UIAutomationTypes
+        `$root = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]$targetHwnd)
+        if (`$null -ne `$root) {
+            `$all = `$root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
+            `$best = `$null
+            `$bestY = [double]::NegativeInfinity
+            foreach (`$element in `$all) {
+                try {
+                    `$className = `$element.Current.ClassName
+                    `$rect = `$element.Current.BoundingRectangle
+                    if (`$element.Current.IsKeyboardFocusable -and -not `$element.Current.IsOffscreen -and `$className -like 'ProseMirror*' -and `$rect.Width -gt 100 -and `$rect.Height -gt 20) {
+                        if (`$rect.Y -gt `$bestY) {
+                            `$best = `$element
+                            `$bestY = `$rect.Y
+                        }
+                    }
+                }
+                catch {
+                }
+            }
+
+            if (`$null -ne `$best) {
+                `$best.SetFocus()
+                Start-Sleep -Milliseconds 50
+                `$focused = [System.Windows.Automation.AutomationElement]::FocusedElement
+                if (`$null -ne `$focused -and `$focused.Current.ClassName -like 'ProseMirror*') {
+                    `$codexComposerFocused = `$true
+                }
+            }
+        }
+    }
+    catch {
+    }
+
+    if (-not `$codexComposerFocused) {
+        exit 0
+    }
+}
+"@
+    }
+    else {
+        ''
+    }
+
+    $command = "Add-Type -AssemblyName System.Windows.Forms; Start-Sleep -Milliseconds $delayMs; $focusCode $sendKeys"
+    Start-Process `
+        -FilePath 'powershell.exe' `
+        -WindowStyle Hidden `
+        -ArgumentList @(
+            '-STA',
+            '-NoProfile',
+            '-ExecutionPolicy', 'Bypass',
+            '-Command', $command
+        ) | Out-Null
+
+    return [pscustomobject]@{
+        started = $true
+        pastedImmediately = $false
+        mode = 'background_powershell'
+        skippedReason = ''
+        focusResult = [pscustomobject]@{
+            focused = $true
+            skippedReason = ''
+            codexComposerFocusAttempted = [bool]$targetInfo.requiresCodexComposerFocus
+        }
+    }
+}
+
+function Apply-FinalText {
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Text,
+        [bool]$SendPaste = $false,
+        [int]$PasteDelaySeconds = 0,
+        [bool]$ReplaceExisting = $false,
+        [bool]$UseCapturedTarget = $true
+    )
+
+    $limitedText = Limit-Text -Value $Text -MaxLength 4000
+    if ([string]::IsNullOrWhiteSpace($limitedText)) {
+        return [pscustomobject]@{
+            copied = $false
+            pasteScheduled = $false
+            reason = 'empty_text'
+        }
+    }
+
+    Write-ClipboardText -Text $limitedText
+    $pasteTarget = if ($UseCapturedTarget) { Get-PasteTargetSnapshot } else { $null }
+    $codexComposerFocusAttempted = $false
+    if ($null -ne $pasteTarget) {
+        $processName = if ($pasteTarget.PSObject.Properties.Item('processName')) { [string]$pasteTarget.processName } else { '' }
+        $title = if ($pasteTarget.PSObject.Properties.Item('title')) { [string]$pasteTarget.title } else { '' }
+        $codexComposerFocusAttempted = ($processName -ieq 'Codex' -or $title -eq 'Codex')
+    }
+    $pasteScheduled = $false
+    $pastedImmediately = $false
+    $pasteSkippedReason = ''
+    $pasteMode = ''
+    $pasteResult = $null
+    if ($SendPaste -and $null -ne $pasteTarget) {
+        $pasteResult = Start-DelayedPaste -DelaySeconds $PasteDelaySeconds -ReplaceExisting $ReplaceExisting -Target $pasteTarget
+        $pasteMode = [string]$pasteResult.mode
+        $pastedImmediately = [bool]$pasteResult.pastedImmediately
+        $pasteScheduled = ([bool]$pasteResult.started -and -not $pastedImmediately)
+        if (-not [bool]$pasteResult.started) {
+            $pasteSkippedReason = [string]$pasteResult.skippedReason
+        }
+    }
+    elseif ($SendPaste) {
+        $pasteSkippedReason = 'missing_paste_target'
+    }
+
+    return [pscustomobject]@{
+        copied = $true
+        pasteScheduled = $pasteScheduled
+        pastedImmediately = $pastedImmediately
+        pasteSkippedReason = $pasteSkippedReason
+        pasteMode = $pasteMode
+        replaceExisting = $ReplaceExisting
+        pasteDelaySeconds = $PasteDelaySeconds
+        pasteTarget = $pasteTarget
+        codexComposerFocusAttempted = $codexComposerFocusAttempted
+        pasteResult = $pasteResult
+        length = $limitedText.Length
+        source = 'codex_voice_final_text'
+    }
+}
+
+function Test-IsCalibrationPageCapture {
+    param([string]$Text)
+
+    if ([string]::IsNullOrWhiteSpace($Text)) {
+        return $false
+    }
+
+    $normalized = $Text.ToLowerInvariant()
+    $matches = 0
+    foreach ($signature in @('codex', 'ctrl+shift+d', 'token', '127.0.0.1', '8793')) {
+        if ($normalized.Contains($signature)) {
+            $matches++
+        }
+    }
+
+    return ($Text.Length -gt 800 -and $matches -ge 3)
+}
+
+function Invoke-VoiceAutoCapture {
+    param([int]$DelaySeconds = 8)
+
+    $settings = Read-Settings
+    $hotkey = if ($settings.activeCalibration.voiceHotkey) {
+        [string]$settings.activeCalibration.voiceHotkey
+    }
+    else {
+        '^+d'
+    }
+
+    if ($DelaySeconds -lt 2) {
+        $DelaySeconds = 2
+    }
+    elseif ($DelaySeconds -gt 60) {
+        $DelaySeconds = 60
+    }
+
+    $before = Read-LatestCodexTranscription -MaxAgeSeconds 0
+    $afterCreatedAtMs = if ($before.found -and $before.createdAtMs) { [int64]$before.createdAtMs } else { 0 }
+    $escapedHotkey = $hotkey.Replace("'", "''")
+    $encodedCommand = "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('$escapedHotkey')"
+
+    Start-Process `
+        -FilePath 'powershell.exe' `
+        -WindowStyle Hidden `
+        -ArgumentList @(
+            '-STA',
+            '-NoProfile',
+            '-ExecutionPolicy', 'Bypass',
+            '-Command', $encodedCommand
+        ) | Out-Null
+
+    Start-Sleep -Seconds $DelaySeconds
+    $latest = Read-LatestCodexTranscription -AfterCreatedAtMs $afterCreatedAtMs
+
+    if (-not $latest.found) {
+        $latest | Add-Member -MemberType NoteProperty -Name rejected -Value $true -Force
+        $latest | Add-Member -MemberType NoteProperty -Name hotkey -Value $hotkey -Force
+        $latest | Add-Member -MemberType NoteProperty -Name label -Value ([string]$settings.activeCalibration.voiceHotkeyLabel) -Force
+        $latest | Add-Member -MemberType NoteProperty -Name delaySeconds -Value $DelaySeconds -Force
+        $latest | Add-Member -MemberType NoteProperty -Name message -Value 'No new Codex transcription appeared in transcription-history.jsonl after sending the voice hotkey.' -Force
+        return $latest
+    }
+
+    $latest | Add-Member -MemberType NoteProperty -Name rejected -Value $false -Force
+    $latest | Add-Member -MemberType NoteProperty -Name hotkey -Value $hotkey -Force
+    $latest | Add-Member -MemberType NoteProperty -Name label -Value ([string]$settings.activeCalibration.voiceHotkeyLabel) -Force
+    $latest | Add-Member -MemberType NoteProperty -Name delaySeconds -Value $DelaySeconds -Force
+    return $latest
+}
+
+function Invoke-AutoApplyCodexTranscription {
+    param(
+        [int64]$AfterCreatedAtMs = 0,
+        [string]$RewriteRule = ''
+    )
+
+    $latest = Read-LatestCodexTranscription -AfterCreatedAtMs $AfterCreatedAtMs -MaxAgeSeconds 0
+    if (-not $latest.found) {
+        return [pscustomobject]@{
+            found = $false
+            applied = $false
+            reason = if ($latest.PSObject.Properties.Item('reason')) { [string]$latest.reason } else { 'no_new_transcription' }
+            afterCreatedAtMs = $AfterCreatedAtMs
+            latest = $latest
+            source = 'codex_voice_auto_apply'
+        }
+    }
+
+    $rawText = Limit-Text -Value $latest.text -MaxLength 4000
+    if ([string]::IsNullOrWhiteSpace($rawText)) {
+        return [pscustomobject]@{
+            found = $true
+            applied = $false
+            reason = 'empty_transcription_text'
+            createdAtMs = $latest.createdAtMs
+            rawText = ''
+            polishedText = ''
+            finalText = ''
+            latest = $latest
+            source = 'codex_voice_auto_apply'
+        }
+    }
+
+    try {
+        $polishedText = Invoke-TextBridge -Text $rawText -RewriteRule $RewriteRule
+        $profileResult = Apply-GeneratedFeedbackProfile -Text $polishedText
+        $finalText = Limit-Text -Value $profileResult.text -MaxLength 4000
+        $applyResult = Apply-FinalText -Text $finalText -SendPaste $true -PasteDelaySeconds 0 -ReplaceExisting $true -UseCapturedTarget $true
+
+        return [pscustomobject]@{
+            found = $true
+            applied = [bool]$applyResult.copied
+            reason = if ([bool]$applyResult.copied) { 'ok' } else { if ($applyResult.PSObject.Properties.Item('reason')) { [string]$applyResult.reason } else { 'apply_failed' } }
+            createdAtMs = $latest.createdAtMs
+            id = $latest.id
+            rawText = $rawText
+            polishedText = $finalText
+            finalText = $finalText
+            profileApplied = [bool]$profileResult.applied
+            profileAppliedCount = [int]$profileResult.appliedCount
+            profileCandidateCount = [int]$profileResult.candidatesSeen
+            latest = $latest
+            applyResult = $applyResult
+            source = 'codex_voice_auto_apply'
+        }
+    }
+    catch {
+        return [pscustomobject]@{
+            found = $true
+            applied = $false
+            reason = 'auto_apply_failed'
+            error = $_.Exception.Message
+            createdAtMs = $latest.createdAtMs
+            rawText = $rawText
+            polishedText = ''
+            finalText = ''
+            latest = $latest
+            source = 'codex_voice_auto_apply'
+        }
+    }
+}
+
+function Invoke-FeedbackCleanup {
+    $cleanupScript = Join-Path $scriptRoot 'Invoke-VoiceFeedbackCleanup.ps1'
+    if (-not (Test-Path -LiteralPath $cleanupScript)) {
+        return [pscustomobject]@{
+            cleaned = $false
+            reason = 'cleanup_script_not_found'
+        }
+    }
+
+    $arguments = @(
+        '-NoProfile',
+        '-ExecutionPolicy', 'Bypass',
+        '-File', $cleanupScript,
+        '-SettingsPath', $SettingsPath,
+        '-Json'
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($FeedbackDir)) {
+        $arguments += @('-FeedbackDir', $FeedbackDir)
+    }
+
+    try {
+        $output = & powershell.exe @arguments 2>&1
+        $outputText = ($output | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0) {
+            return [pscustomobject]@{
+                cleaned = $false
+                reason = 'cleanup_failed'
+                output = Limit-Text -Value $outputText -MaxLength 1000
+            }
+        }
+
+        return ($outputText | ConvertFrom-Json)
+    }
+    catch {
+        return [pscustomobject]@{
+            cleaned = $false
+            reason = 'cleanup_exception'
+            output = Limit-Text -Value $_.Exception.Message -MaxLength 1000
+        }
+    }
+}
+
+function Write-FeedbackRecord {
+    param([Parameter(Mandatory = $true)]$Payload)
+
+    $settings = Read-Settings
+    $learning = $settings.feedbackLearning
+    $source = [string]$Payload.source
+
+    if ($source -notin @('codex_voice_web_review', 'codex_voice_active_calibration')) {
+        return [pscustomobject]@{
+            recorded = $false
+            reason = 'unsupported_source'
+        }
+    }
+
+    if ($Payload.captureContext -ne 'codex_voice_input') {
+        return [pscustomobject]@{
+            recorded = $false
+            reason = 'unsupported_context'
+        }
+    }
+
+    if ($source -eq 'codex_voice_web_review' -and -not [bool]$learning.enabled) {
+        return [pscustomobject]@{
+            recorded = $false
+            reason = 'disabled'
+        }
+    }
+
+    $maxTextLength = if ($learning.maxTextLength) { [int]$learning.maxTextLength } else { 4000 }
+    $targetDir = if ([string]::IsNullOrWhiteSpace($FeedbackDir)) {
+        Resolve-ProjectPath ([string]$learning.storageDir)
+    }
+    else {
+        $FeedbackDir
+    }
+
+    if (-not (Test-Path -LiteralPath $targetDir)) {
+        New-Item -ItemType Directory -Path $targetDir | Out-Null
+    }
+
+    $date = Get-Date -Format 'yyyy-MM-dd'
+    $path = Join-Path $targetDir "$date.jsonl"
+    $rawText = Limit-Text -Value $Payload.rawText -MaxLength $maxTextLength
+    $polishedText = Limit-Text -Value $Payload.polishedText -MaxLength $maxTextLength
+    $finalText = Limit-Text -Value $Payload.finalText -MaxLength $maxTextLength
+
+    $record = [pscustomobject]@{
+        version = 1
+        source = $source
+        captureContext = 'codex_voice_input'
+        recordedAt = (Get-Date).ToString('o')
+        decision = [string]$Payload.decision
+        stage = [string]$Payload.stage
+        topicId = [string]$Payload.topicId
+        topicTitle = [string]$Payload.topicTitle
+        rewriteRule = Limit-Text -Value $Payload.rewriteRule -MaxLength 1000
+        rawText = $rawText
+        polishedText = $polishedText
+        finalText = $finalText
+        changedFromRaw = ($rawText.Trim() -ne $finalText.Trim())
+        changedFromPolished = ($polishedText.Trim() -ne $finalText.Trim())
+        notes = @($Payload.notes)
+    }
+
+    ($record | ConvertTo-Json -Depth 8 -Compress) | Add-Content -Encoding UTF8 -LiteralPath $path
+
+    $cleanup = $null
+    if (-not $learning.PSObject.Properties.Item('cleanupAfterSave') -or [bool]$learning.cleanupAfterSave) {
+        $cleanup = Invoke-FeedbackCleanup
+    }
+
+    return [pscustomobject]@{
+        recorded = $true
+        reason = 'ok'
+        path = $path
+        cleanup = $cleanup
+    }
+}
+
+function Invoke-FeedbackLearningIteration {
+    param([string]$Date = (Get-Date -Format 'yyyy-MM-dd'))
+
+    $iterationScript = Join-Path $scriptRoot 'Invoke-VoiceFeedbackDailyIteration.ps1'
+    if (-not (Test-Path -LiteralPath $iterationScript)) {
+        return [pscustomobject]@{
+            generated = $false
+            reason = 'iteration_script_not_found'
+        }
+    }
+
+    $arguments = @(
+        '-NoProfile',
+        '-ExecutionPolicy', 'Bypass',
+        '-File', $iterationScript,
+        '-Date', $Date,
+        '-Force',
+        '-SettingsPath', $SettingsPath
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($FeedbackDir)) {
+        $arguments += @('-FeedbackDir', $FeedbackDir)
+    }
+
+    $output = & powershell.exe @arguments 2>&1
+    $outputText = ($output | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0) {
+        return [pscustomobject]@{
+            generated = $false
+            reason = 'iteration_failed'
+            output = Limit-Text -Value $outputText -MaxLength 1000
+        }
+    }
+
+    $settings = Read-Settings
+    $profilePath = Resolve-ProjectPath ([string]$settings.feedbackLearning.generatedProfilePath)
+    $profile = $null
+    if (Test-Path -LiteralPath $profilePath) {
+        try {
+            $profile = Get-Content -Raw -Encoding UTF8 -LiteralPath $profilePath | ConvertFrom-Json
+        }
+        catch {
+            $profile = $null
+        }
+    }
+
+    $replacementCandidates = if ($null -ne $profile) { @($profile.replacementCandidates) } else { @() }
+    $rewriteRuleSamples = if ($null -ne $profile) { @($profile.rewriteRuleSamples) } else { @() }
+    $cleanup = $null
+    if (
+        $settings.feedbackLearning -and
+        (-not $settings.feedbackLearning.PSObject.Properties.Item('cleanupAfterDailyIteration') -or [bool]$settings.feedbackLearning.cleanupAfterDailyIteration)
+    ) {
+        $cleanup = Invoke-FeedbackCleanup
+    }
+
+    return [pscustomobject]@{
+        generated = (Test-Path -LiteralPath $profilePath)
+        reason = 'ok'
+        path = $profilePath
+        sourceLog = if ($null -ne $profile -and $profile.PSObject.Properties.Item('sourceLog')) { [string]$profile.sourceLog } else { '' }
+        sourceDate = if ($null -ne $profile -and $profile.PSObject.Properties.Item('sourceDate')) { [string]$profile.sourceDate } else { '' }
+        eventsSeen = if ($null -ne $profile -and $profile.PSObject.Properties.Item('eventsSeen')) { [int]$profile.eventsSeen } else { 0 }
+        changedEvents = if ($null -ne $profile -and $profile.PSObject.Properties.Item('changedEvents')) { [int]$profile.changedEvents } else { 0 }
+        replacementCandidateCount = $replacementCandidates.Count
+        rewriteRuleSampleCount = $rewriteRuleSamples.Count
+        topReplacementCandidates = @($replacementCandidates | Select-Object -First 5)
+        cleanup = $cleanup
+        output = Limit-Text -Value $outputText -MaxLength 1000
+    }
+}
+
+try {
+    while ($listener.IsListening) {
+        $context = $listener.GetContext()
+        $requestPath = [System.Uri]::UnescapeDataString($context.Request.Url.AbsolutePath.TrimStart('/'))
+
+        if ([string]::IsNullOrWhiteSpace($requestPath)) {
+            $requestPath = 'settings.html'
+        }
+
+        if ($requestPath -eq 'health') {
+            Send-TextResponse -Response $context.Response -Text 'ok'
+            continue
+        }
+
+        if ($requestPath -eq 'api/features') {
+            Send-JsonResponse -Response $context.Response -Value ([pscustomobject]@{
+                version = 8
+                features = @(
+                    'latest-codex-transcription',
+                    'rule-driven-polish',
+                    'apply-final-text',
+                    'direct-zero-delay-return',
+                    'return-validation-panel',
+                    'generated-profile-polish',
+                    'replace-existing-on-return',
+                    'auto-apply-codex-transcription',
+                    'feedback-learning-iteration',
+                    'separate-save-and-rule-update',
+                    'feedback-retention-cleanup'
+                )
+            })
+            continue
+        }
+
+        if ($requestPath -eq 'api/settings') {
+            if ($context.Request.HttpMethod -eq 'GET') {
+                Send-JsonResponse -Response $context.Response -Value (Read-Settings)
+                continue
+            }
+
+            if ($context.Request.HttpMethod -eq 'POST') {
+                $body = Read-RequestBody -Request $context.Request
+                $incoming = if ([string]::IsNullOrWhiteSpace($body)) { [pscustomobject]@{} } else { $body | ConvertFrom-Json }
+                Send-JsonResponse -Response $context.Response -Value (Merge-Settings -Incoming $incoming)
+                continue
+            }
+
+            Send-JsonResponse -Response $context.Response -Value ([pscustomobject]@{ error = 'method not allowed' }) -StatusCode 405
+            continue
+        }
+
+        if ($requestPath -eq 'api/onboarding-topics') {
+            if ($context.Request.HttpMethod -ne 'GET') {
+                Send-JsonResponse -Response $context.Response -Value ([pscustomobject]@{ error = 'method not allowed' }) -StatusCode 405
+                continue
+            }
+
+            $topicsPath = Join-Path $projectRoot 'config\onboarding-topic-prompts.json'
+            if (-not (Test-Path -LiteralPath $topicsPath)) {
+                Send-JsonResponse -Response $context.Response -Value ([pscustomobject]@{ error = 'topics not found' }) -StatusCode 404
+                continue
+            }
+
+            $topics = Get-Content -Raw -Encoding UTF8 -LiteralPath $topicsPath | ConvertFrom-Json
+            Send-JsonResponse -Response $context.Response -Value $topics
+            continue
+        }
+
+        if ($requestPath -eq 'api/polish') {
+            if ($context.Request.HttpMethod -ne 'POST') {
+                Send-JsonResponse -Response $context.Response -Value ([pscustomobject]@{ error = 'method not allowed' }) -StatusCode 405
+                continue
+            }
+
+            $body = Read-RequestBody -Request $context.Request
+            $payload = if ([string]::IsNullOrWhiteSpace($body)) { [pscustomobject]@{} } else { $body | ConvertFrom-Json }
+            $rawText = Limit-Text -Value $payload.rawText -MaxLength 4000
+            $rewriteRule = Limit-Text -Value $payload.rewriteRule -MaxLength 1000
+
+            if ([string]::IsNullOrWhiteSpace($rawText)) {
+                Send-JsonResponse -Response $context.Response -Value ([pscustomobject]@{ error = 'empty rawText' }) -StatusCode 400
+                continue
+            }
+
+            try {
+                $polishedText = Invoke-TextBridge -Text $rawText -RewriteRule $rewriteRule
+                $profileResult = Apply-GeneratedFeedbackProfile -Text $polishedText
+                Send-JsonResponse -Response $context.Response -Value ([pscustomobject]@{
+                    polishedText = [string]$profileResult.text
+                    profileApplied = [bool]$profileResult.applied
+                    profileAppliedCount = [int]$profileResult.appliedCount
+                    profileCandidateCount = [int]$profileResult.candidatesSeen
+                    profilePath = [string]$profileResult.profilePath
+                    profileSourceDate = [string]$profileResult.sourceDate
+                })
+            }
+            catch {
+                Send-JsonResponse -Response $context.Response -Value ([pscustomobject]@{ error = $_.Exception.Message }) -StatusCode 500
+            }
+
+            continue
+        }
+
+        if ($requestPath -eq 'api/voice-hotkey') {
+            if ($context.Request.HttpMethod -ne 'POST') {
+                Send-JsonResponse -Response $context.Response -Value ([pscustomobject]@{ error = 'method not allowed' }) -StatusCode 405
+                continue
+            }
+
+            $body = Read-RequestBody -Request $context.Request
+            $payload = if ([string]::IsNullOrWhiteSpace($body)) { [pscustomobject]@{} } else { $body | ConvertFrom-Json }
+            Send-JsonResponse -Response $context.Response -Value (Invoke-VoiceHotkey -DryRun ([bool]$payload.dryRun))
+            continue
+        }
+
+        if ($requestPath -eq 'api/clipboard-text') {
+            if ($context.Request.HttpMethod -ne 'POST') {
+                Send-JsonResponse -Response $context.Response -Value ([pscustomobject]@{ error = 'method not allowed' }) -StatusCode 405
+                continue
+            }
+
+            try {
+                $clipboardText = Limit-Text -Value (Read-ClipboardText) -MaxLength 4000
+                Send-JsonResponse -Response $context.Response -Value ([pscustomobject]@{
+                    text = $clipboardText
+                    length = $clipboardText.Length
+                    source = 'explicit_clipboard_import'
+                    capturedAt = (Get-Date).ToString('o')
+                    monitoring = $false
+                })
+            }
+            catch {
+                Send-JsonResponse -Response $context.Response -Value ([pscustomobject]@{ error = $_.Exception.Message }) -StatusCode 500
+            }
+
+            continue
+        }
+
+        if ($requestPath -eq 'api/apply-final-text') {
+            if ($context.Request.HttpMethod -ne 'POST') {
+                Send-JsonResponse -Response $context.Response -Value ([pscustomobject]@{ error = 'method not allowed' }) -StatusCode 405
+                continue
+            }
+
+            $body = Read-RequestBody -Request $context.Request
+            $payload = if ([string]::IsNullOrWhiteSpace($body)) { [pscustomobject]@{} } else { $body | ConvertFrom-Json }
+            $text = if ($payload.PSObject.Properties.Item('text')) { [string]$payload.text } else { '' }
+            $sendPaste = ($payload.PSObject.Properties.Item('sendPaste') -and [bool]$payload.sendPaste)
+            $pasteDelaySeconds = if ($payload.PSObject.Properties.Item('pasteDelaySeconds')) { [int]$payload.pasteDelaySeconds } else { 0 }
+            $replaceExisting = ($payload.PSObject.Properties.Item('replaceExisting') -and [bool]$payload.replaceExisting)
+            $useCapturedTarget = -not ($payload.PSObject.Properties.Item('useCapturedTarget') -and -not [bool]$payload.useCapturedTarget)
+            $result = Apply-FinalText -Text $text -SendPaste $sendPaste -PasteDelaySeconds $pasteDelaySeconds -ReplaceExisting $replaceExisting -UseCapturedTarget $useCapturedTarget
+            Send-JsonResponse -Response $context.Response -Value $result
+            continue
+        }
+
+        if ($requestPath -eq 'api/capture-paste-target') {
+            if ($context.Request.HttpMethod -notin @('GET', 'POST')) {
+                Send-JsonResponse -Response $context.Response -Value ([pscustomobject]@{ error = 'method not allowed' }) -StatusCode 405
+                continue
+            }
+
+            Send-JsonResponse -Response $context.Response -Value ([pscustomobject]@{
+                captured = $true
+                pasteTarget = (Capture-PasteTarget -Reason 'manual_api')
+            })
+            continue
+        }
+
+        if ($requestPath -eq 'api/latest-codex-transcription') {
+            if ($context.Request.HttpMethod -notin @('GET', 'POST')) {
+                Send-JsonResponse -Response $context.Response -Value ([pscustomobject]@{ error = 'method not allowed' }) -StatusCode 405
+                continue
+            }
+
+            $payload = [pscustomobject]@{}
+            if ($context.Request.HttpMethod -eq 'POST') {
+                $body = Read-RequestBody -Request $context.Request
+                $payload = if ([string]::IsNullOrWhiteSpace($body)) { [pscustomobject]@{} } else { $body | ConvertFrom-Json }
+            }
+
+            $afterCreatedAtMs = if ($payload.PSObject.Properties.Item('afterCreatedAtMs') -and $payload.afterCreatedAtMs) {
+                [int64]$payload.afterCreatedAtMs
+            }
+            else {
+                0
+            }
+
+            $maxAgeSeconds = if ($payload.PSObject.Properties.Item('maxAgeSeconds') -and $payload.maxAgeSeconds) {
+                [int]$payload.maxAgeSeconds
+            }
+            else {
+                $MaxTranscriptionAgeSeconds
+            }
+
+            Send-JsonResponse -Response $context.Response -Value (Read-LatestCodexTranscription -AfterCreatedAtMs $afterCreatedAtMs -MaxAgeSeconds $maxAgeSeconds)
+            continue
+        }
+
+        if ($requestPath -eq 'api/voice-auto-capture') {
+            if ($context.Request.HttpMethod -ne 'POST') {
+                Send-JsonResponse -Response $context.Response -Value ([pscustomobject]@{ error = 'method not allowed' }) -StatusCode 405
+                continue
+            }
+
+            $body = Read-RequestBody -Request $context.Request
+            $payload = if ([string]::IsNullOrWhiteSpace($body)) { [pscustomobject]@{} } else { $body | ConvertFrom-Json }
+            $settings = Read-Settings
+            $delaySeconds = if ($payload.delaySeconds) {
+                [int]$payload.delaySeconds
+            }
+            elseif ($settings.activeCalibration.autoImportDelaySeconds) {
+                [int]$settings.activeCalibration.autoImportDelaySeconds
+            }
+            else {
+                8
+            }
+
+            if ([bool]$payload.dryRun) {
+                Send-JsonResponse -Response $context.Response -Value ([pscustomobject]@{
+                    dryRun = $true
+                    sent = $false
+                    delaySeconds = $delaySeconds
+                    hotkey = [string]$settings.activeCalibration.voiceHotkey
+                    label = [string]$settings.activeCalibration.voiceHotkeyLabel
+                    captureMode = 'send_hotkey_wait_then_read_codex_transcription_history'
+                    monitoring = $false
+                })
+                continue
+            }
+
+            try {
+                Send-JsonResponse -Response $context.Response -Value (Invoke-VoiceAutoCapture -DelaySeconds $delaySeconds)
+            }
+            catch {
+                Send-JsonResponse -Response $context.Response -Value ([pscustomobject]@{ error = $_.Exception.Message }) -StatusCode 500
+            }
+
+            continue
+        }
+
+        if ($requestPath -eq 'api/auto-apply-codex-transcription') {
+            if ($context.Request.HttpMethod -ne 'POST') {
+                Send-JsonResponse -Response $context.Response -Value ([pscustomobject]@{ error = 'method not allowed' }) -StatusCode 405
+                continue
+            }
+
+            $body = Read-RequestBody -Request $context.Request
+            $payload = if ([string]::IsNullOrWhiteSpace($body)) { [pscustomobject]@{} } else { $body | ConvertFrom-Json }
+            $afterCreatedAtMs = if ($payload.PSObject.Properties.Item('afterCreatedAtMs') -and $payload.afterCreatedAtMs) {
+                [int64]$payload.afterCreatedAtMs
+            }
+            else {
+                0
+            }
+            $rewriteRule = if ($payload.PSObject.Properties.Item('rewriteRule')) {
+                Limit-Text -Value $payload.rewriteRule -MaxLength 1000
+            }
+            else {
+                ''
+            }
+
+            Send-JsonResponse -Response $context.Response -Value (Invoke-AutoApplyCodexTranscription -AfterCreatedAtMs $afterCreatedAtMs -RewriteRule $rewriteRule)
+            continue
+        }
+
+        if ($requestPath -eq 'api/feedback') {
+            if ($context.Request.HttpMethod -ne 'POST') {
+                Send-JsonResponse -Response $context.Response -Value ([pscustomobject]@{ error = 'method not allowed' }) -StatusCode 405
+                continue
+            }
+
+            $body = Read-RequestBody -Request $context.Request
+            $payload = if ([string]::IsNullOrWhiteSpace($body)) { [pscustomobject]@{} } else { $body | ConvertFrom-Json }
+            $result = Write-FeedbackRecord -Payload $payload
+            Send-JsonResponse -Response $context.Response -Value $result
+            continue
+        }
+
+        if ($requestPath -eq 'api/feedback-learning-iteration') {
+            if ($context.Request.HttpMethod -ne 'POST') {
+                Send-JsonResponse -Response $context.Response -Value ([pscustomobject]@{ error = 'method not allowed' }) -StatusCode 405
+                continue
+            }
+
+            Send-JsonResponse -Response $context.Response -Value (Invoke-FeedbackLearningIteration -Date (Get-Date -Format 'yyyy-MM-dd'))
+            continue
+        }
+
+        if ($requestPath -eq 'index.html') {
+            $requestPath = 'settings.html'
+        }
+
+        if ($requestPath -notin @('review-panel.html', 'settings.html')) {
+            Send-TextResponse -Response $context.Response -Text 'not found' -StatusCode 404
+            continue
+        }
+
+        $filePath = Join-Path $resolvedWebRoot $requestPath
+        if (-not (Test-Path -LiteralPath $filePath)) {
+            Send-TextResponse -Response $context.Response -Text 'page not found' -StatusCode 404
+            continue
+        }
+
+        $html = Get-Content -Raw -Encoding UTF8 -LiteralPath $filePath
+        Send-TextResponse -Response $context.Response -Text $html -ContentType 'text/html; charset=utf-8'
+    }
+}
+finally {
+    if ($listener.IsListening) {
+        $listener.Stop()
+    }
+
+    $listener.Close()
+}

@@ -1,0 +1,14 @@
+* text=auto
+
+.gitattributes text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.cs text eol=lf
+*.csproj text eol=lf
+*.html text eol=lf
+*.txt text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+LICENSE text eol=lf
+.editorconfig text eol=lf
+*.ps1 text eol=crlf
