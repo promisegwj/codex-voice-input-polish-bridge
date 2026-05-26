@@ -758,6 +758,27 @@
         <div class="notice return-panel">
           <h3>完成当前校准</h3>
           <p>确认回填会把“发送给 Codex 的最终文本”写入剪贴板，并尝试回填到 Codex 输入框。保存样本也会把这段文本当作标准答案。若你回填后又在 Codex 输入框里手动修改，网页无法自动知道发送按钮按下瞬间的文本，请回到这里同步后再保存样本。</p>
+          <div class="setting-row">
+            <div>
+              <h3>发送后旁路确认</h3>
+              <p>回填后在限定时间内轮询 Codex 本地会话记录；检测到相似的已发送用户消息后，自动把它同步为最终文本并保存样本。</p>
+            </div>
+            <label class="switch" aria-label="发送后旁路确认">
+              <input id="sentTextMonitorEnabled" type="checkbox">
+              <span class="slider"></span>
+            </label>
+          </div>
+          <div class="flow-controls">
+            <label class="delay-control" for="sentTextMonitorDurationSeconds">
+              监听时长秒
+              <input id="sentTextMonitorDurationSeconds" type="number" min="10" max="180" step="5" value="60">
+            </label>
+            <label class="delay-control" for="sentTextMonitorPollSeconds">
+              检查间隔秒
+              <input id="sentTextMonitorPollSeconds" type="number" min="1" max="10" step="1" value="3">
+            </label>
+          </div>
+          <div id="sentTextMonitorState" class="inline-status">发送后旁路确认未启动。</div>
           <input id="pasteDelaySeconds" type="hidden" value="0">
           <div class="actions">
             <button class="primary" id="confirmReturnText">确认回填</button>
@@ -832,6 +853,10 @@
     const autoApplyEnabled = document.getElementById("autoApplyEnabled");
     const autoApplyPollMilliseconds = document.getElementById("autoApplyPollMilliseconds");
     const autoApplyState = document.getElementById("autoApplyState");
+    const sentTextMonitorEnabled = document.getElementById("sentTextMonitorEnabled");
+    const sentTextMonitorDurationSeconds = document.getElementById("sentTextMonitorDurationSeconds");
+    const sentTextMonitorPollSeconds = document.getElementById("sentTextMonitorPollSeconds");
+    const sentTextMonitorState = document.getElementById("sentTextMonitorState");
     const sendGuardBanner = document.getElementById("sendGuardBanner");
     const sendGuardTitle = document.getElementById("sendGuardTitle");
     const sendGuardText = document.getElementById("sendGuardText");
@@ -874,6 +899,12 @@
     let autoApplyTimer = null;
     let autoApplyBaselineCreatedAtMs = 0;
     let autoApplyIsPolling = false;
+    let sentTextMonitorTimer = null;
+    let sentTextMonitorStartedAtMs = 0;
+    let sentTextMonitorAfterTimestamp = "";
+    let sentTextMonitorExpectedText = "";
+    let sentTextMonitorIsPolling = false;
+    let sentTextMonitorAutoSave = true;
 
     function setStatus(text, className) {
       statusEl.textContent = text;
@@ -1070,6 +1101,25 @@
       return Math.min(5000, Math.max(500, parsed));
     }
 
+    function clampSentMonitorDurationSeconds(value) {
+      return clampInteger(value, 60, 10, 180);
+    }
+
+    function clampSentMonitorPollSeconds(value) {
+      return clampInteger(value, 3, 1, 10);
+    }
+
+    function setSentTextMonitorState(text, className) {
+      sentTextMonitorState.textContent = text;
+      sentTextMonitorState.className = "inline-status " + (className || "");
+    }
+
+    function updateSentTextMonitorControls() {
+      const disabled = !sentTextMonitorEnabled.checked;
+      sentTextMonitorDurationSeconds.disabled = disabled;
+      sentTextMonitorPollSeconds.disabled = disabled;
+    }
+
     function setVoiceButtonsDisabled(disabled) {
       autoCaptureVoice.disabled = disabled;
       triggerVoice.disabled = disabled;
@@ -1130,8 +1180,12 @@
       pasteDelaySeconds.value = clampPasteDelaySeconds(activeCalibration.pasteDelaySeconds ?? 0);
       autoApplyEnabled.checked = Boolean(activeCalibration.autoApplyEnabled);
       autoApplyPollMilliseconds.value = clampPollMilliseconds(activeCalibration.autoApplyPollMilliseconds || 500);
+      sentTextMonitorEnabled.checked = activeCalibration.sentTextMonitorEnabled !== false;
+      sentTextMonitorDurationSeconds.value = clampSentMonitorDurationSeconds(activeCalibration.sentTextMonitorDurationSeconds || 60);
+      sentTextMonitorPollSeconds.value = clampSentMonitorPollSeconds(activeCalibration.sentTextMonitorPollSeconds || 3);
       triggerVoice.textContent = `仅发送语音快捷键（${activeCalibration.voiceHotkeyLabel || "Ctrl+Shift+D"}）`;
       updateLearningControls();
+      updateSentTextMonitorControls();
       syncAutoApplyFromSettings();
     }
 
@@ -1174,6 +1228,9 @@
           pasteDelaySeconds: clampPasteDelaySeconds(pasteDelaySeconds.value),
           autoApplyEnabled: autoApplyEnabled.checked,
           autoApplyPollMilliseconds: clampPollMilliseconds(autoApplyPollMilliseconds.value),
+          sentTextMonitorEnabled: sentTextMonitorEnabled.checked,
+          sentTextMonitorDurationSeconds: clampSentMonitorDurationSeconds(sentTextMonitorDurationSeconds.value),
+          sentTextMonitorPollSeconds: clampSentMonitorPollSeconds(sentTextMonitorPollSeconds.value),
           defaultRewriteRule: rewriteRule.value.trim()
         }
       };
@@ -1198,10 +1255,112 @@
       activeFinal.value = value || "";
       activeFinal.dataset.returnedText = "";
       activeFinal.dataset.returnedAt = "";
+      activeFinal.dataset.sentText = "";
+      activeFinal.dataset.sentAt = "";
     }
 
     function finalTextForReturn() {
       return activeFinal.value.trim();
+    }
+
+    async function fetchLatestCodexSentText(payload = {}) {
+      const response = await fetch("/api/latest-codex-sent-text", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+
+      if (!response.ok) {
+        throw new Error("sent text monitor failed");
+      }
+
+      return response.json();
+    }
+
+    function stopSentTextMonitor(message = "发送后旁路确认未启动。", className = "") {
+      if (sentTextMonitorTimer) {
+        window.clearInterval(sentTextMonitorTimer);
+        sentTextMonitorTimer = null;
+      }
+
+      sentTextMonitorIsPolling = false;
+      if (message) {
+        setSentTextMonitorState(message, className);
+      }
+    }
+
+    function startSentTextMonitor(expectedText, options = {}) {
+      if (!sentTextMonitorEnabled.checked) {
+        setSentTextMonitorState("发送后旁路确认已关闭；样本仍以网页最终文本为准。", "");
+        return;
+      }
+
+      if (!expectedText.trim()) {
+        setSentTextMonitorState("最终文本为空，无法启动发送后旁路确认。", "warn");
+        return;
+      }
+
+      stopSentTextMonitor("", "");
+      const durationSeconds = clampSentMonitorDurationSeconds(sentTextMonitorDurationSeconds.value);
+      const pollSeconds = clampSentMonitorPollSeconds(sentTextMonitorPollSeconds.value);
+      sentTextMonitorDurationSeconds.value = durationSeconds;
+      sentTextMonitorPollSeconds.value = pollSeconds;
+      sentTextMonitorExpectedText = expectedText.trim();
+      sentTextMonitorAfterTimestamp = options.afterTimestamp || new Date().toISOString();
+      sentTextMonitorStartedAtMs = Date.now();
+      sentTextMonitorAutoSave = options.autoSave !== false;
+      setSentTextMonitorState(`已启动发送后旁路确认；${durationSeconds} 秒内每 ${pollSeconds} 秒检查一次 Codex 本地会话记录。`, "warn");
+      sentTextMonitorTimer = window.setInterval(() => {
+        pollSentTextMonitor();
+      }, pollSeconds * 1000);
+      pollSentTextMonitor();
+    }
+
+    async function pollSentTextMonitor() {
+      if (!sentTextMonitorTimer || sentTextMonitorIsPolling) {
+        return;
+      }
+
+      const durationSeconds = clampSentMonitorDurationSeconds(sentTextMonitorDurationSeconds.value);
+      const elapsedSeconds = Math.floor((Date.now() - sentTextMonitorStartedAtMs) / 1000);
+      if (elapsedSeconds >= durationSeconds) {
+        stopSentTextMonitor(`已监听 ${durationSeconds} 秒，未在 Codex 本地会话记录中确认已发送文本；可手动确认后保存样本。`, "warn");
+        return;
+      }
+
+      sentTextMonitorIsPolling = true;
+      try {
+        const result = await fetchLatestCodexSentText({
+          expectedText: sentTextMonitorExpectedText,
+          afterTimestamp: sentTextMonitorAfterTimestamp,
+          maxAgeSeconds: durationSeconds + 30
+        });
+
+        if (!result.found) {
+          setSentTextMonitorState(`正在等待 Codex 发送记录；已等待 ${elapsedSeconds} 秒。`, "warn");
+          return;
+        }
+
+        stopSentTextMonitor("", "");
+        activeFinal.value = result.text || sentTextMonitorExpectedText;
+        activeFinal.dataset.sentText = activeFinal.value;
+        activeFinal.dataset.sentAt = result.observedAt || new Date().toISOString();
+        setSentTextMonitorState(`已从 Codex 本地会话记录确认最终发送文本，相似度 ${result.score}%。`, "saved");
+        setVoiceStatus("已检测到真正进入 Codex 对话的用户消息，并同步回“发送给 Codex 的最终文本”。正在保存样本。", "saved");
+
+        if (sentTextMonitorAutoSave) {
+          await saveActiveSample({
+            decision: "active_calibration_auto_saved_after_sent_confirmation",
+            note: `发送后旁路确认：${result.score}%`
+          });
+        }
+      }
+      catch {
+        setSentTextMonitorState("发送后旁路确认检查失败；请确认本地服务可以读取 Codex 会话记录。", "warn");
+      }
+      finally {
+        sentTextMonitorIsPolling = false;
+      }
     }
 
     async function applyFinalText() {
@@ -1257,6 +1416,10 @@
       activeFinal.dataset.returnedText = finalText;
       activeFinal.dataset.returnedAt = new Date().toISOString();
       setVoiceStatus(`发送给 Codex 的最终文本已写入剪贴板。${targetText} ${returnAction}${skipText}`, "saved");
+      startSentTextMonitor(finalText, {
+        afterTimestamp: activeFinal.dataset.returnedAt,
+        autoSave: true
+      });
     }
 
     async function triggerVoiceInput() {
@@ -1499,6 +1662,11 @@
           setSendGuard("ready", "可以发送", "已自动整理并安排回填。请确认 Codex 输入框内容正确后再发送。");
           setAutoApplyState("已检测到新语音，整理文本已写入剪贴板并安排回填。确认输入框内容正确后可以发送。", "saved");
         }
+
+        startSentTextMonitor(result.finalText || result.polishedText || result.rawText || "", {
+          afterTimestamp: new Date().toISOString(),
+          autoSave: true
+        });
       }
       catch {
         setSendGuard("danger", "请先不要发送", "自动应用检查失败。请确认服务仍在运行，或手动粘贴整理文本。");
@@ -1636,7 +1804,7 @@
       setVoiceButtonsDisabled(false);
     }
 
-    async function saveActiveSample() {
+    async function saveActiveSample(options = {}) {
       const topic = selectedTopic();
       const rawText = activeRaw.value.trim();
       const polishedText = activePolished.value.trim();
@@ -1655,7 +1823,7 @@
         body: JSON.stringify({
           source: "codex_voice_active_calibration",
           captureContext: "codex_voice_input",
-          decision: "active_calibration_saved",
+          decision: options.decision || "active_calibration_saved",
           stage: topic.stage,
           topicId: topic.id,
           topicTitle: topic.title,
@@ -1665,7 +1833,7 @@
           finalText,
           sentToCodexText: finalText,
           finalTextMeaning: "text_confirmed_for_codex_send",
-          notes: [`主动校准：${topic.title}`]
+          notes: [`主动校准：${topic.title}`, options.note || ""].filter(Boolean)
         })
       });
 
@@ -1677,7 +1845,7 @@
       if (result.recorded) {
         updateSampleSaveResult(result);
         setStatus("样本已保存", "saved");
-        setVoiceStatus("当前样本已保存。需要基于已保存样本生成候选规则时，再点击“更新规则”。", "saved");
+        setVoiceStatus(options.decision ? "已根据发送后确认文本自动保存样本。需要生成候选规则时，再点击“更新规则”。" : "当前样本已保存。需要基于已保存样本生成候选规则时，再点击“更新规则”。", "saved");
       }
       else {
         updateSampleSaveResult(result);
@@ -1734,6 +1902,28 @@
       });
     });
 
+    sentTextMonitorEnabled.addEventListener("change", () => {
+      updateSentTextMonitorControls();
+      if (!sentTextMonitorEnabled.checked) {
+        stopSentTextMonitor("发送后旁路确认已关闭。", "");
+      }
+
+      saveSettings().catch(() => {
+        setStatus("保存失败", "warn");
+        setSentTextMonitorState("发送后旁路确认设置保存失败。", "warn");
+      });
+    });
+
+    sentTextMonitorDurationSeconds.addEventListener("change", () => {
+      sentTextMonitorDurationSeconds.value = clampSentMonitorDurationSeconds(sentTextMonitorDurationSeconds.value);
+      saveSettings().catch(() => setStatus("保存失败", "warn"));
+    });
+
+    sentTextMonitorPollSeconds.addEventListener("change", () => {
+      sentTextMonitorPollSeconds.value = clampSentMonitorPollSeconds(sentTextMonitorPollSeconds.value);
+      saveSettings().catch(() => setStatus("保存失败", "warn"));
+    });
+
     document.getElementById("save").addEventListener("click", () => {
       saveSettings().catch(() => setStatus("保存失败", "warn"));
     });
@@ -1743,6 +1933,8 @@
     activeFinal.addEventListener("input", () => {
       activeFinal.dataset.returnedText = "";
       activeFinal.dataset.returnedAt = "";
+      activeFinal.dataset.sentText = "";
+      activeFinal.dataset.sentAt = "";
     });
 
     startCalibrationMonitor.addEventListener("click", () => {
@@ -1820,6 +2012,7 @@
       activeRaw.value = "";
       activePolished.value = "";
       setActiveFinalText("");
+      stopSentTextMonitor("发送后旁路确认未启动。", "");
       setStatus("已清空", "");
       setVoiceStatus("已清空当前主动校准文本。", "");
     });

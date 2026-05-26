@@ -10,6 +10,8 @@ param(
 
     [string]$TranscriptionHistoryPath = '',
 
+    [string]$CodexSessionsRoot = '',
+
     [int]$MaxTranscriptionAgeSeconds = 900
 )
 
@@ -35,6 +37,10 @@ if ([string]::IsNullOrWhiteSpace($SettingsPath)) {
 
 if ([string]::IsNullOrWhiteSpace($TranscriptionHistoryPath)) {
     $TranscriptionHistoryPath = Join-Path $env:USERPROFILE '.codex\transcription-history.jsonl'
+}
+
+if ([string]::IsNullOrWhiteSpace($CodexSessionsRoot)) {
+    $CodexSessionsRoot = Join-Path $env:USERPROFILE '.codex\sessions'
 }
 
 $listener = [System.Net.HttpListener]::new()
@@ -223,6 +229,10 @@ function Get-DefaultSettings {
             pasteDelaySeconds = 0
             autoApplyEnabled = $false
             autoApplyPollMilliseconds = 500
+            sentTextMonitorEnabled = $true
+            sentTextMonitorDurationSeconds = 60
+            sentTextMonitorPollSeconds = 3
+            sentTextMonitorMinScore = 70
             defaultRewriteRule = '先判断原始口述的真实意图和任务边界；保留事实、否定、时间、数字、路径、文件名、专有名词和条件，不新增原文没有的信息。删除不承载意义的口头禅、重复句、犹豫词和自我打断；对“不是 A，是 B”“不对，改成 B”以后者为准。将“你能不能/是不是可以”改为直接可执行请求，但真正的可行性询问要保留为问题。多件事按 1、2、3 拆分，每项写成“动作 + 对象 + 验证/交付要求”。长句按意图断句，使用规范中文标点；保留必要的语气和不确定性，关键歧义标为“需确认”。输出应简洁、清楚、可执行，适合直接发给 Codex；不要额外添加固定标题。'
         }
     }
@@ -281,6 +291,22 @@ function Read-Settings {
 
         if (-not $settings.activeCalibration.PSObject.Properties.Item('autoApplyPollMilliseconds')) {
             $settings.activeCalibration | Add-Member -MemberType NoteProperty -Name autoApplyPollMilliseconds -Value $defaults.activeCalibration.autoApplyPollMilliseconds
+        }
+
+        if (-not $settings.activeCalibration.PSObject.Properties.Item('sentTextMonitorEnabled')) {
+            $settings.activeCalibration | Add-Member -MemberType NoteProperty -Name sentTextMonitorEnabled -Value $defaults.activeCalibration.sentTextMonitorEnabled
+        }
+
+        if (-not $settings.activeCalibration.PSObject.Properties.Item('sentTextMonitorDurationSeconds')) {
+            $settings.activeCalibration | Add-Member -MemberType NoteProperty -Name sentTextMonitorDurationSeconds -Value $defaults.activeCalibration.sentTextMonitorDurationSeconds
+        }
+
+        if (-not $settings.activeCalibration.PSObject.Properties.Item('sentTextMonitorPollSeconds')) {
+            $settings.activeCalibration | Add-Member -MemberType NoteProperty -Name sentTextMonitorPollSeconds -Value $defaults.activeCalibration.sentTextMonitorPollSeconds
+        }
+
+        if (-not $settings.activeCalibration.PSObject.Properties.Item('sentTextMonitorMinScore')) {
+            $settings.activeCalibration | Add-Member -MemberType NoteProperty -Name sentTextMonitorMinScore -Value $defaults.activeCalibration.sentTextMonitorMinScore
         }
 
         return $settings
@@ -429,6 +455,46 @@ function Merge-Settings {
 
             $activeCalibration.autoApplyPollMilliseconds = $pollMilliseconds
         }
+
+        if ($null -ne $Incoming.activeCalibration.sentTextMonitorEnabled) {
+            $activeCalibration.sentTextMonitorEnabled = [bool]$Incoming.activeCalibration.sentTextMonitorEnabled
+        }
+
+        if ($null -ne $Incoming.activeCalibration.sentTextMonitorDurationSeconds) {
+            $durationSeconds = [int]$Incoming.activeCalibration.sentTextMonitorDurationSeconds
+            if ($durationSeconds -lt 10) {
+                $durationSeconds = 10
+            }
+            elseif ($durationSeconds -gt 180) {
+                $durationSeconds = 180
+            }
+
+            $activeCalibration.sentTextMonitorDurationSeconds = $durationSeconds
+        }
+
+        if ($null -ne $Incoming.activeCalibration.sentTextMonitorPollSeconds) {
+            $pollSeconds = [int]$Incoming.activeCalibration.sentTextMonitorPollSeconds
+            if ($pollSeconds -lt 1) {
+                $pollSeconds = 1
+            }
+            elseif ($pollSeconds -gt 10) {
+                $pollSeconds = 10
+            }
+
+            $activeCalibration.sentTextMonitorPollSeconds = $pollSeconds
+        }
+
+        if ($null -ne $Incoming.activeCalibration.sentTextMonitorMinScore) {
+            $minScore = [int]$Incoming.activeCalibration.sentTextMonitorMinScore
+            if ($minScore -lt 50) {
+                $minScore = 50
+            }
+            elseif ($minScore -gt 100) {
+                $minScore = 100
+            }
+
+            $activeCalibration.sentTextMonitorMinScore = $minScore
+        }
     }
 
     Save-Settings -Settings $settings
@@ -547,6 +613,277 @@ function Read-LatestCodexTranscription {
         source = 'codex_transcription_history'
         monitoring = $false
         pasteTarget = $pasteTarget
+    }
+}
+
+function Get-ComparableText {
+    param([object]$Value)
+
+    $text = if ($null -eq $Value) { '' } else { [string]$Value }
+    $text = $text.Trim().ToLowerInvariant()
+    return [System.Text.RegularExpressions.Regex]::Replace($text, '[^\p{L}\p{Nd}]', '')
+}
+
+function Get-TextTokenSet {
+    param([string]$Text)
+
+    $set = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+    if ([string]::IsNullOrWhiteSpace($Text)) {
+        return $set
+    }
+
+    if ($Text.Length -eq 1) {
+        [void]$set.Add($Text)
+        return $set
+    }
+
+    for ($i = 0; $i -lt ($Text.Length - 1); $i++) {
+        [void]$set.Add($Text.Substring($i, 2))
+    }
+
+    return $set
+}
+
+function Get-TextMatchScore {
+    param(
+        [string]$ExpectedText,
+        [string]$CandidateText
+    )
+
+    $expected = Get-ComparableText -Value $ExpectedText
+    $candidate = Get-ComparableText -Value $CandidateText
+
+    if ([string]::IsNullOrWhiteSpace($expected) -or [string]::IsNullOrWhiteSpace($candidate)) {
+        return 0
+    }
+
+    if ($candidate -eq $expected -or $candidate.Contains($expected)) {
+        return 100
+    }
+
+    if ($expected.Contains($candidate)) {
+        return [int][Math]::Round(100 * ($candidate.Length / [double]$expected.Length))
+    }
+
+    $expectedSet = Get-TextTokenSet -Text $expected
+    $candidateSet = Get-TextTokenSet -Text $candidate
+    if ($expectedSet.Count -eq 0 -or $candidateSet.Count -eq 0) {
+        return 0
+    }
+
+    $intersection = 0
+    foreach ($token in $expectedSet) {
+        if ($candidateSet.Contains($token)) {
+            $intersection++
+        }
+    }
+
+    $union = $expectedSet.Count + $candidateSet.Count - $intersection
+    if ($union -le 0) {
+        return 0
+    }
+
+    return [int][Math]::Round(100 * ($intersection / [double]$union))
+}
+
+function Get-RequestTextFromCodexMessage {
+    param([object]$Value)
+
+    $text = if ($null -eq $Value) { '' } else { [string]$Value }
+    $marker = '## My request for Codex:'
+    $index = $text.IndexOf($marker, [System.StringComparison]::OrdinalIgnoreCase)
+    if ($index -ge 0) {
+        return $text.Substring($index + $marker.Length).Trim()
+    }
+
+    return $text.Trim()
+}
+
+function Get-CodexUserTextFromRecord {
+    param([Parameter(Mandatory = $true)]$Record)
+
+    if (-not $Record.PSObject.Properties.Item('payload')) {
+        return ''
+    }
+
+    $payload = $Record.payload
+    if ($Record.type -eq 'event_msg' -and $payload.type -eq 'user_message' -and $payload.PSObject.Properties.Item('message')) {
+        return Get-RequestTextFromCodexMessage -Value $payload.message
+    }
+
+    if ($Record.type -eq 'response_item' -and $payload.type -eq 'message' -and $payload.role -eq 'user') {
+        if ($payload.PSObject.Properties.Item('content')) {
+            $parts = @()
+            foreach ($part in @($payload.content)) {
+                if ($part -is [string]) {
+                    $parts += [string]$part
+                }
+                elseif ($part.PSObject.Properties.Item('text')) {
+                    $parts += [string]$part.text
+                }
+                elseif ($part.PSObject.Properties.Item('content')) {
+                    $parts += [string]$part.content
+                }
+            }
+
+            return Get-RequestTextFromCodexMessage -Value ($parts -join "`n")
+        }
+    }
+
+    return ''
+}
+
+function ConvertTo-DateTimeOffsetOrNull {
+    param([object]$Value)
+
+    if ($null -eq $Value) {
+        return $null
+    }
+
+    try {
+        return [DateTimeOffset]::Parse(
+            [string]$Value,
+            [System.Globalization.CultureInfo]::InvariantCulture,
+            [System.Globalization.DateTimeStyles]::AssumeUniversal
+        ).ToUniversalTime()
+    }
+    catch {
+        return $null
+    }
+}
+
+function Read-LatestCodexSentText {
+    param(
+        [string]$ExpectedText = '',
+        [string]$AfterTimestamp = '',
+        [int]$MaxAgeSeconds = 120,
+        [int]$MinScore = 70
+    )
+
+    if ([string]::IsNullOrWhiteSpace($ExpectedText)) {
+        return [pscustomobject]@{
+            found = $false
+            reason = 'empty_expected_text'
+            text = ''
+            length = 0
+            source = 'codex_session_user_message'
+        }
+    }
+
+    if (-not (Test-Path -LiteralPath $CodexSessionsRoot)) {
+        return [pscustomobject]@{
+            found = $false
+            reason = 'sessions_root_missing'
+            text = ''
+            length = 0
+            sessionsRoot = $CodexSessionsRoot
+            source = 'codex_session_user_message'
+        }
+    }
+
+    $after = ConvertTo-DateTimeOffsetOrNull -Value $AfterTimestamp
+    if ($null -eq $after) {
+        $after = [DateTimeOffset]::UtcNow.AddSeconds(-1 * [Math]::Max(1, $MaxAgeSeconds))
+    }
+
+    $cutoff = $after.UtcDateTime.AddSeconds(-10)
+    $files = @(Get-ChildItem -LiteralPath $CodexSessionsRoot -Recurse -File -Filter '*.jsonl' -ErrorAction SilentlyContinue |
+        Where-Object { $_.LastWriteTimeUtc -ge $cutoff } |
+        Sort-Object LastWriteTimeUtc -Descending |
+        Select-Object -First 20)
+
+    if ($files.Count -eq 0) {
+        return [pscustomobject]@{
+            found = $false
+            reason = 'no_recent_session_files'
+            text = ''
+            length = 0
+            afterTimestamp = $after.ToString('o')
+            sessionsRoot = $CodexSessionsRoot
+            source = 'codex_session_user_message'
+        }
+    }
+
+    $best = $null
+    foreach ($file in $files) {
+        $lines = @()
+        try {
+            $lines = @(Get-Content -LiteralPath $file.FullName -Encoding UTF8 -Tail 500)
+        }
+        catch {
+            continue
+        }
+
+        foreach ($line in $lines) {
+            if ([string]::IsNullOrWhiteSpace($line)) {
+                continue
+            }
+
+            try {
+                $record = $line | ConvertFrom-Json
+            }
+            catch {
+                continue
+            }
+
+            $observedAt = ConvertTo-DateTimeOffsetOrNull -Value $record.timestamp
+            if ($null -eq $observedAt -or $observedAt -le $after) {
+                continue
+            }
+
+            if ($MaxAgeSeconds -gt 0 -and ([DateTimeOffset]::UtcNow - $observedAt).TotalSeconds -gt $MaxAgeSeconds) {
+                continue
+            }
+
+            $text = Get-CodexUserTextFromRecord -Record $record
+            if ([string]::IsNullOrWhiteSpace($text)) {
+                continue
+            }
+
+            $score = Get-TextMatchScore -ExpectedText $ExpectedText -CandidateText $text
+            if ($score -lt $MinScore) {
+                continue
+            }
+
+            if ($null -eq $best -or $score -gt [int]$best.score -or ($score -eq [int]$best.score -and $observedAt -gt $best.observedAtOffset)) {
+                $best = [pscustomobject]@{
+                    text = Limit-Text -Value $text -MaxLength 4000
+                    fullLength = ([string]$text).Length
+                    observedAt = $observedAt.ToString('o')
+                    observedAtOffset = $observedAt
+                    sessionPath = $file.FullName
+                    score = $score
+                }
+            }
+        }
+    }
+
+    if ($null -eq $best) {
+        return [pscustomobject]@{
+            found = $false
+            reason = 'no_matching_sent_text'
+            text = ''
+            length = 0
+            afterTimestamp = $after.ToString('o')
+            minScore = $MinScore
+            checkedFiles = $files.Count
+            sessionsRoot = $CodexSessionsRoot
+            source = 'codex_session_user_message'
+        }
+    }
+
+    return [pscustomobject]@{
+        found = $true
+        reason = 'ok'
+        text = $best.text
+        length = $best.fullLength
+        observedAt = $best.observedAt
+        sessionPath = $best.sessionPath
+        score = $best.score
+        minScore = $MinScore
+        afterTimestamp = $after.ToString('o')
+        checkedFiles = $files.Count
+        source = 'codex_session_user_message'
     }
 }
 
@@ -1438,9 +1775,10 @@ try {
 
         if ($requestPath -eq 'api/features') {
             Send-JsonResponse -Response $context.Response -Value ([pscustomobject]@{
-                version = 8
+                version = 9
                 features = @(
                     'latest-codex-transcription',
+                    'latest-codex-sent-text',
                     'rule-driven-polish',
                     'apply-final-text',
                     'direct-zero-delay-return',
@@ -1618,6 +1956,45 @@ try {
             }
 
             Send-JsonResponse -Response $context.Response -Value (Read-LatestCodexTranscription -AfterCreatedAtMs $afterCreatedAtMs -MaxAgeSeconds $maxAgeSeconds)
+            continue
+        }
+
+        if ($requestPath -eq 'api/latest-codex-sent-text') {
+            if ($context.Request.HttpMethod -ne 'POST') {
+                Send-JsonResponse -Response $context.Response -Value ([pscustomobject]@{ error = 'method not allowed' }) -StatusCode 405
+                continue
+            }
+
+            $body = Read-RequestBody -Request $context.Request
+            $payload = if ([string]::IsNullOrWhiteSpace($body)) { [pscustomobject]@{} } else { $body | ConvertFrom-Json }
+            $settings = Read-Settings
+            $expectedText = if ($payload.PSObject.Properties.Item('expectedText')) {
+                Limit-Text -Value $payload.expectedText -MaxLength 4000
+            }
+            else {
+                ''
+            }
+            $afterTimestamp = if ($payload.PSObject.Properties.Item('afterTimestamp')) { [string]$payload.afterTimestamp } else { '' }
+            $maxAgeSeconds = if ($payload.PSObject.Properties.Item('maxAgeSeconds') -and $payload.maxAgeSeconds) {
+                [int]$payload.maxAgeSeconds
+            }
+            elseif ($settings.activeCalibration.sentTextMonitorDurationSeconds) {
+                [int]$settings.activeCalibration.sentTextMonitorDurationSeconds
+            }
+            else {
+                60
+            }
+            $minScore = if ($payload.PSObject.Properties.Item('minScore') -and $payload.minScore) {
+                [int]$payload.minScore
+            }
+            elseif ($settings.activeCalibration.sentTextMonitorMinScore) {
+                [int]$settings.activeCalibration.sentTextMonitorMinScore
+            }
+            else {
+                70
+            }
+
+            Send-JsonResponse -Response $context.Response -Value (Read-LatestCodexSentText -ExpectedText $expectedText -AfterTimestamp $afterTimestamp -MaxAgeSeconds $maxAgeSeconds -MinScore $minScore)
             continue
         }
 
