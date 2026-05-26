@@ -91,7 +91,7 @@ if (Test-Path -LiteralPath $logPath) {
 
         try {
             $record = $line | ConvertFrom-Json
-            if ($record.source -in @('codex_voice_web_review', 'codex_voice_active_calibration') -and $record.finalText) {
+            if ($record.source -in @('codex_voice_web_review', 'codex_voice_active_calibration') -and ($record.sentToCodexText -or $record.finalText)) {
                 $records.Add($record)
             }
         }
@@ -179,7 +179,7 @@ foreach ($record in $records) {
     }
 
     $autoText = if ($record.polishedText) { [string]$record.polishedText } else { [string]$record.rawText }
-    $finalText = [string]$record.finalText
+    $finalText = if ($record.sentToCodexText) { [string]$record.sentToCodexText } else { [string]$record.finalText }
     $delta = Get-TextDelta -From $autoText -To $finalText
 
     if ($null -eq $delta) {

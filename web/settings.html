@@ -527,7 +527,7 @@
 
       <div class="notice trust-panel">
         <h3>数据记录条件</h3>
-        <p>仅在启用持续学习，并且你保存语音审核结果或主动校准样本时，写入原始识别文本、自动整理文本、人工核验编辑文本和整理规则。记录保存在本机，用于生成候选规则。</p>
+        <p>仅在启用持续学习，并且你保存语音审核结果或主动校准样本时，写入原始识别文本、自动整理文本、发送给 Codex 的最终文本和整理规则。记录保存在本机，用于生成候选规则。</p>
       </div>
     </section>
 
@@ -570,7 +570,7 @@
       <div class="setting-row">
         <div>
           <h3>启用自动对比校准</h3>
-          <p>开启后，保存语音审核结果或主动校准样本时，记录“原始识别文本、自动整理文本、人工核验编辑文本”之间的差异。</p>
+          <p>开启后，保存语音审核结果或主动校准样本时，记录“原始识别文本、自动整理文本、发送给 Codex 的最终文本”之间的差异。</p>
         </div>
         <label class="switch" aria-label="持续学习">
           <input id="feedbackEnabled" type="checkbox">
@@ -664,7 +664,7 @@
       <div class="panel-head">
         <div>
           <h2>主动校准</h2>
-          <p>该功能用于手动提供语音输入样本。你确认后的文本会作为该样本的标准答案，用于后续候选规则生成。</p>
+          <p>该功能用于手动提供语音输入样本。你确认准备发送给 Codex 的文本会作为该样本的标准答案，用于后续候选规则生成。</p>
         </div>
       </div>
 
@@ -750,14 +750,14 @@
             <textarea id="activePolished" readonly placeholder="点击“生成整理文本”后，此处显示工具自动整理后的版本。"></textarea>
           </div>
           <div>
-            <h3>人工核验编辑文本</h3>
-            <textarea id="activeFinal" placeholder="在这里编辑你认可并准备提交给大模型的版本；保存样本时以此作为标准答案。"></textarea>
+            <h3>发送给 Codex 的最终文本</h3>
+            <textarea id="activeFinal" placeholder="在这里编辑你准备发给 Codex 的最终版本；确认回填和保存样本都以这段文本为准。"></textarea>
           </div>
         </div>
 
         <div class="notice return-panel">
           <h3>完成当前校准</h3>
-          <p>确认回填会把“人工核验编辑文本”写入剪贴板。系统会先尝试切回此前捕获的 Codex 窗口，并聚焦底部输入框；如果聚焦失败，只保留剪贴板内容，不改写审核页文本。</p>
+          <p>确认回填会把“发送给 Codex 的最终文本”写入剪贴板，并尝试回填到 Codex 输入框。保存样本也会把这段文本当作标准答案。若你回填后又在 Codex 输入框里手动修改，网页无法自动知道发送按钮按下瞬间的文本，请回到这里同步后再保存样本。</p>
           <input id="pasteDelaySeconds" type="hidden" value="0">
           <div class="actions">
             <button class="primary" id="confirmReturnText">确认回填</button>
@@ -786,7 +786,7 @@
                 <div id="ruleUpdatePath" class="validation-value">等待更新</div>
               </div>
             </div>
-            <p id="learningValidationNote" class="validation-note">保存样本会写入本机 JSONL；更新规则会从本机样本生成候选替换，并参与后续自动整理。</p>
+            <p id="learningValidationNote" class="validation-note">保存样本会把“发送给 Codex 的最终文本”写入本机 JSONL；更新规则会从本机样本生成候选替换，并参与后续自动整理。</p>
           </div>
           <div id="returnValidation" class="validation-result" aria-live="polite">
             <h3>回填校验结果</h3>
@@ -808,7 +808,7 @@
                 <div id="returnValidationDelay" class="validation-value">0 秒</div>
               </div>
             </div>
-            <p id="returnValidationNote" class="validation-note">回填后这里会显示服务返回的校验结果；最终是否进了 Codex 输入框仍以输入框实际内容为准。</p>
+            <p id="returnValidationNote" class="validation-note">回填后这里会显示服务返回的校验结果；网页无法监听 Codex 的发送按钮，最终是否发送成功仍以 Codex 输入框和对话实际内容为准。</p>
           </div>
         </div>
       </div>
@@ -954,7 +954,7 @@
 
       const noteParts = [];
       if (copied) {
-        noteParts.push("人工核验文本已写入剪贴板。");
+        noteParts.push("发送给 Codex 的最终文本已写入剪贴板。");
       }
       if (result?.pastedImmediately) {
         noteParts.push("本次走零延迟路径，服务已直接尝试聚焦并粘贴。");
@@ -968,7 +968,7 @@
       if (skippedReason) {
         noteParts.push(`跳过粘贴原因：${skippedReason}。`);
       }
-      noteParts.push("最终是否进入 Codex 输入框，以输入框实际内容为准。");
+      noteParts.push("网页无法监听 Codex 的发送按钮；如果回填后又在 Codex 输入框里修改，请回到这里同步最终文本。");
       returnValidationNote.textContent = noteParts.join("");
     }
 
@@ -998,7 +998,7 @@
     function updateSampleSaveResult(result) {
       if (!result?.recorded) {
         sampleSaveState.textContent = `未保存：${result?.reason || "未知原因"}`;
-        learningValidationNote.textContent = "样本没有写入本机。请确认原始识别文本和人工核验编辑文本都不为空。";
+        learningValidationNote.textContent = "样本没有写入本机。请确认原始识别文本和发送给 Codex 的最终文本都不为空。";
         return;
       }
 
@@ -1027,7 +1027,7 @@
             .slice(0, 3)
             .join("；")
         : "";
-      learningValidationNote.textContent = `本次读取 ${seen} 条样本，其中 ${changed} 条有人工修改。候选规则会作为精确替换参与后续自动整理。${preview ? `示例：${preview}` : "暂无可展示候选。"}`;
+      learningValidationNote.textContent = `本次读取 ${seen} 条样本，其中 ${changed} 条最终文本不同于自动整理文本。候选规则会作为精确替换参与后续自动整理。${preview ? `示例：${preview}` : "暂无可展示候选。"}`;
       const cleanupText = cleanupSummary(result.cleanup);
       if (cleanupText) {
         learningValidationNote.textContent += cleanupText;
@@ -1194,6 +1194,12 @@
       setStatus("设置已保存", "saved");
     }
 
+    function setActiveFinalText(value) {
+      activeFinal.value = value || "";
+      activeFinal.dataset.returnedText = "";
+      activeFinal.dataset.returnedAt = "";
+    }
+
     function finalTextForReturn() {
       return activeFinal.value.trim();
     }
@@ -1201,8 +1207,8 @@
     async function applyFinalText() {
       const finalText = finalTextForReturn();
       if (!finalText) {
-        setStatus("人工核验文本为空", "warn");
-        setVoiceStatus("没有可回填的人工核验编辑文本。请先导入、生成并核验文本。", "warn");
+        setStatus("最终文本为空", "warn");
+        setVoiceStatus("没有可回填的最终文本。请先导入、生成并确认要发送给 Codex 的文本。", "warn");
         activeFinal.focus();
         return;
       }
@@ -1233,7 +1239,7 @@
 
       if (!result.copied) {
         setStatus("回填失败", "warn");
-        setVoiceStatus("人工核验编辑文本为空或写入剪贴板失败。", "warn");
+        setVoiceStatus("发送给 Codex 的最终文本为空或写入剪贴板失败。", "warn");
         return;
       }
 
@@ -1244,11 +1250,13 @@
       const delayText = delaySeconds > 0 ? `${delaySeconds} 秒后` : "马上";
       const returnStatus = result.pastedImmediately ? "已直接回填" : "已准备回填";
       const returnAction = result.pastedImmediately
-        ? "已经尝试完成全选并粘贴核验文本。"
-        : `${delayText}会先全选原内容，再粘贴核验文本。`;
+        ? "已经尝试完成全选并粘贴最终文本。"
+        : `${delayText}会先全选原内容，再粘贴最终文本。`;
       const skipText = result.pasteSkippedReason ? `本次没有发送粘贴按键：${result.pasteSkippedReason}。` : "";
       setStatus(returnStatus, "saved");
-      setVoiceStatus(`人工核验编辑文本已写入剪贴板。${targetText} ${returnAction}${skipText}`, "saved");
+      activeFinal.dataset.returnedText = finalText;
+      activeFinal.dataset.returnedAt = new Date().toISOString();
+      setVoiceStatus(`发送给 Codex 的最终文本已写入剪贴板。${targetText} ${returnAction}${skipText}`, "saved");
     }
 
     async function triggerVoiceInput() {
@@ -1297,14 +1305,14 @@
       activePolished.value = result.polishedText || "";
       const shouldSyncFinal = Boolean(options.fromAutoCapture || options.fromImport || options.syncFinal || !activeFinal.value.trim());
       if (shouldSyncFinal) {
-        activeFinal.value = result.polishedText || rawText;
+        setActiveFinalText(result.polishedText || rawText);
       }
       setStatus("已生成整理文本", "saved");
       if (options.fromAutoCapture) {
-        setVoiceStatus("已自动取回识别文本，并生成整理文本。人工核验编辑文本已填入，可继续编辑后保存样本。", "saved");
+        setVoiceStatus("已自动取回识别文本，并生成整理文本。发送给 Codex 的最终文本已填入，可继续编辑后回填或保存样本。", "saved");
       }
       else {
-        setVoiceStatus(options.fromImport ? "已导入识别结果，并自动生成整理文本。人工核验编辑文本已填入，可继续编辑后保存样本。" : (shouldSyncFinal ? "已生成整理文本，并填入人工核验编辑文本。" : "已生成自动整理文本，人工核验编辑文本未被覆盖。"), "saved");
+        setVoiceStatus(options.fromImport ? "已导入识别结果，并自动生成整理文本。发送给 Codex 的最终文本已填入，可继续编辑后回填或保存样本。" : (shouldSyncFinal ? "已生成整理文本，并填入发送给 Codex 的最终文本。" : "已生成自动整理文本，发送给 Codex 的最终文本未被覆盖。"), "saved");
       }
     }
 
@@ -1461,7 +1469,7 @@
 
         activeRaw.value = result.rawText || "";
         activePolished.value = result.polishedText || "";
-        activeFinal.value = result.finalText || result.polishedText || result.rawText || "";
+        setActiveFinalText(result.finalText || result.polishedText || result.rawText || "");
 
         if (result.applyResult) {
           updateReturnValidation(result.applyResult);
@@ -1637,7 +1645,7 @@
 
       if (!topic || !rawText || !finalText) {
         setStatus("校准样本不完整", "warn");
-        setVoiceStatus("请先导入原始识别文本，并在人工核验编辑文本中保留标准答案。", "warn");
+        setVoiceStatus("请先导入原始识别文本，并在发送给 Codex 的最终文本中保留标准答案。", "warn");
         return;
       }
 
@@ -1655,6 +1663,8 @@
           rawText,
           polishedText,
           finalText,
+          sentToCodexText: finalText,
+          finalTextMeaning: "text_confirmed_for_codex_send",
           notes: [`主动校准：${topic.title}`]
         })
       });
@@ -1672,7 +1682,7 @@
       else {
         updateSampleSaveResult(result);
         setStatus(`未保存：${result.reason || "未知原因"}`, "warn");
-        setVoiceStatus("样本没有保存成功，请检查原始识别文本和人工核验编辑文本是否完整。", "warn");
+        setVoiceStatus("样本没有保存成功，请检查原始识别文本和发送给 Codex 的最终文本是否完整。", "warn");
       }
     }
 
@@ -1729,6 +1739,11 @@
     });
 
     topicSelect.addEventListener("change", renderSelectedTopic);
+
+    activeFinal.addEventListener("input", () => {
+      activeFinal.dataset.returnedText = "";
+      activeFinal.dataset.returnedAt = "";
+    });
 
     startCalibrationMonitor.addEventListener("click", () => {
       startCalibrationMonitoring();
@@ -1804,7 +1819,7 @@
     document.getElementById("clearActive").addEventListener("click", () => {
       activeRaw.value = "";
       activePolished.value = "";
-      activeFinal.value = "";
+      setActiveFinalText("");
       setStatus("已清空", "");
       setVoiceStatus("已清空当前主动校准文本。", "");
     });

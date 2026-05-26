@@ -1308,6 +1308,12 @@ function Write-FeedbackRecord {
     $rawText = Limit-Text -Value $Payload.rawText -MaxLength $maxTextLength
     $polishedText = Limit-Text -Value $Payload.polishedText -MaxLength $maxTextLength
     $finalText = Limit-Text -Value $Payload.finalText -MaxLength $maxTextLength
+    $sentToCodexText = if ($Payload.PSObject.Properties.Item('sentToCodexText')) {
+        Limit-Text -Value $Payload.sentToCodexText -MaxLength $maxTextLength
+    }
+    else {
+        $finalText
+    }
 
     $record = [pscustomobject]@{
         version = 1
@@ -1322,8 +1328,10 @@ function Write-FeedbackRecord {
         rawText = $rawText
         polishedText = $polishedText
         finalText = $finalText
-        changedFromRaw = ($rawText.Trim() -ne $finalText.Trim())
-        changedFromPolished = ($polishedText.Trim() -ne $finalText.Trim())
+        sentToCodexText = $sentToCodexText
+        finalTextMeaning = if ($Payload.PSObject.Properties.Item('finalTextMeaning')) { [string]$Payload.finalTextMeaning } else { 'text_confirmed_for_codex_send' }
+        changedFromRaw = ($rawText.Trim() -ne $sentToCodexText.Trim())
+        changedFromPolished = ($polishedText.Trim() -ne $sentToCodexText.Trim())
         notes = @($Payload.notes)
     }
 
