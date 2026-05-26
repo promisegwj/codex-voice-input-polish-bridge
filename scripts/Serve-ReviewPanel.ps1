@@ -1651,6 +1651,17 @@ function Write-FeedbackRecord {
     else {
         $finalText
     }
+    $changedFromPolished = ($polishedText.Trim() -ne $sentToCodexText.Trim())
+
+    if (-not $changedFromPolished) {
+        return [pscustomobject]@{
+            recorded = $false
+            reason = 'unchanged_from_polished'
+            changedFromPolished = $false
+            polishedLength = $polishedText.Length
+            sentToCodexLength = $sentToCodexText.Length
+        }
+    }
 
     $record = [pscustomobject]@{
         version = 1
@@ -1668,7 +1679,7 @@ function Write-FeedbackRecord {
         sentToCodexText = $sentToCodexText
         finalTextMeaning = if ($Payload.PSObject.Properties.Item('finalTextMeaning')) { [string]$Payload.finalTextMeaning } else { 'text_confirmed_for_codex_send' }
         changedFromRaw = ($rawText.Trim() -ne $sentToCodexText.Trim())
-        changedFromPolished = ($polishedText.Trim() -ne $sentToCodexText.Trim())
+        changedFromPolished = $changedFromPolished
         notes = @($Payload.notes)
     }
 

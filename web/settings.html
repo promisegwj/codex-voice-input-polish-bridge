@@ -1028,8 +1028,14 @@
 
     function updateSampleSaveResult(result) {
       if (!result?.recorded) {
-        sampleSaveState.textContent = `未保存：${result?.reason || "未知原因"}`;
-        learningValidationNote.textContent = "样本没有写入本机。请确认原始识别文本和发送给 Codex 的最终文本都不为空。";
+        if (result?.reason === "unchanged_from_polished") {
+          sampleSaveState.textContent = "未保存：无规则差异";
+          learningValidationNote.textContent = "最终发送文本与自动整理文本一致，对规则学习没有贡献，所以没有写入样本。";
+        }
+        else {
+          sampleSaveState.textContent = `未保存：${result?.reason || "未知原因"}`;
+          learningValidationNote.textContent = "样本没有写入本机。请确认原始识别文本和发送给 Codex 的最终文本都不为空。";
+        }
         return;
       }
 
@@ -1849,8 +1855,14 @@
       }
       else {
         updateSampleSaveResult(result);
-        setStatus(`未保存：${result.reason || "未知原因"}`, "warn");
-        setVoiceStatus("样本没有保存成功，请检查原始识别文本和发送给 Codex 的最终文本是否完整。", "warn");
+        if (result.reason === "unchanged_from_polished") {
+          setStatus("无规则差异，未保存", "saved");
+          setVoiceStatus("最终发送文本与自动整理文本一致，这条对规则学习没有贡献，所以没有写入样本。", "saved");
+        }
+        else {
+          setStatus(`未保存：${result.reason || "未知原因"}`, "warn");
+          setVoiceStatus("样本没有保存成功，请检查原始识别文本和发送给 Codex 的最终文本是否完整。", "warn");
+        }
       }
     }
 
