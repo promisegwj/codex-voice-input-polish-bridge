@@ -92,6 +92,12 @@ if (Test-Path -LiteralPath $logPath) {
         try {
             $record = $line | ConvertFrom-Json
             if ($record.source -in @('codex_voice_web_review', 'codex_voice_active_calibration') -and ($record.sentToCodexText -or $record.finalText)) {
+                $autoText = if ($record.polishedText) { [string]$record.polishedText } else { [string]$record.rawText }
+                $finalText = if ($record.sentToCodexText) { [string]$record.sentToCodexText } else { [string]$record.finalText }
+                if ($autoText.Trim() -eq $finalText.Trim()) {
+                    continue
+                }
+
                 $records.Add($record)
             }
         }
