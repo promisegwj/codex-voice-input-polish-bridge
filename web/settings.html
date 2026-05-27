@@ -1,4 +1,4 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
@@ -969,14 +969,14 @@
       const copied = Boolean(result?.copied);
       const skippedReason = result?.pasteSkippedReason || "";
       const state = !copied
-        ? "失败"
+        ? "处理失败"
         : result.pastedImmediately
-          ? "已直接回填"
+          ? "已回填到 Codex 输入框，可以发送"
           : result.pasteScheduled
-            ? "已安排回填"
+            ? "已安排回填，等待确认"
             : skippedReason
-              ? "已复制，未粘贴"
-              : "已复制";
+              ? "未回填，已复制到剪贴板"
+              : "已复制到剪贴板";
 
       returnValidationState.textContent = state;
       returnValidationMode.textContent = pasteModeLabel(result);
@@ -988,10 +988,10 @@
         noteParts.push("发送给 Codex 的最终文本已写入剪贴板。");
       }
       if (result?.pastedImmediately) {
-        noteParts.push("本次走零延迟路径，服务已直接尝试聚焦并粘贴。");
+        noteParts.push("本次走零延迟路径，服务已确认聚焦并发送粘贴按键。");
       }
       else if (result?.pasteScheduled) {
-        noteParts.push("本次已交给后台回填流程。");
+        noteParts.push("本次已交给后台回填流程；请先确认 Codex 输入框内容，再发送。");
       }
       if (result?.codexComposerFocusAttempted) {
         noteParts.push("目标为 Codex 时已尝试聚焦底部输入框。");
@@ -1413,19 +1413,30 @@
         ? `系统会先尝试切回此前捕获的窗口：${target.title || target.processName}。${result.codexComposerFocusAttempted ? "若目标是 Codex，会再尝试聚焦底部输入框；聚焦失败时将跳过按键粘贴。" : ""}`
         : "未捕获到明确窗口时，本次只写入剪贴板，不发送粘贴按键。";
       const delayText = delaySeconds > 0 ? `${delaySeconds} 秒后` : "马上";
-      const returnStatus = result.pastedImmediately ? "已直接回填" : "已准备回填";
+      const returnStatus = result.pastedImmediately
+        ? "已回填，可以发送"
+        : result.pasteScheduled
+          ? "已安排回填"
+          : result.pasteSkippedReason
+            ? "未回填，已复制"
+            : "已复制到剪贴板";
       const returnAction = result.pastedImmediately
-        ? "已经尝试完成全选并粘贴最终文本。"
-        : `${delayText}会先全选原内容，再粘贴最终文本。`;
+        ? "已确认聚焦目标并发送全选粘贴按键。"
+        : result.pasteScheduled
+          ? `${delayText}会先全选原内容，再粘贴最终文本；请确认 Codex 输入框内容后再发送。`
+          : "没有安排粘贴，请手动粘贴剪贴板中的最终文本。";
       const skipText = result.pasteSkippedReason ? `本次没有发送粘贴按键：${result.pasteSkippedReason}。` : "";
-      setStatus(returnStatus, "saved");
+      const returnClass = result.pastedImmediately ? "saved" : "warn";
+      setStatus(returnStatus, returnClass);
       activeFinal.dataset.returnedText = finalText;
       activeFinal.dataset.returnedAt = new Date().toISOString();
-      setVoiceStatus(`发送给 Codex 的最终文本已写入剪贴板。${targetText} ${returnAction}${skipText}`, "saved");
-      startSentTextMonitor(finalText, {
-        afterTimestamp: activeFinal.dataset.returnedAt,
-        autoSave: true
-      });
+      setVoiceStatus(`发送给 Codex 的最终文本已写入剪贴板。${targetText} ${returnAction}${skipText}`, returnClass);
+      if (result.pastedImmediately || result.pasteScheduled) {
+        startSentTextMonitor(finalText, {
+          afterTimestamp: activeFinal.dataset.returnedAt,
+          autoSave: true
+        });
+      }
     }
 
     async function triggerVoiceInput() {
@@ -1654,25 +1665,32 @@
 
         const applyResult = result.applyResult || {};
         if (applyResult.pastedImmediately) {
-          setStatus("已自动整理并回填", "saved");
-          setSendGuard("ready", "可以发送", "已自动整理并尝试回填到 Codex 输入框。请确认输入框内容正确后再发送。");
-          setAutoApplyState("已检测到新语音，完成自动整理并尝试回填到 Codex 输入框。现在可以确认后发送。", "saved");
+          setStatus("已回填，可以发送", "saved");
+          setSendGuard("ready", "可以发送", "已自动整理并回填到 Codex 输入框。请确认输入框内容正确后再发送。");
+          setAutoApplyState("已检测到新语音，完成自动整理并回填到 Codex 输入框。现在可以确认后发送。", "saved");
         }
         else if (applyResult.pasteSkippedReason) {
-          setStatus("已自动整理，等待手动粘贴", "warn");
+          setStatus("未回填，已复制", "warn");
           setSendGuard("danger", "请先不要发送", "整理文本已写入剪贴板，但没有成功回填。请手动粘贴或确认输入框内容后再发送。");
-          setAutoApplyState(`已整理并写入剪贴板，但没有发送粘贴按键：${applyResult.pasteSkippedReason}`, "warn");
+          setAutoApplyState(`未回填，已复制到剪贴板。已跳过自动粘贴：${applyResult.pasteSkippedReason}`, "warn");
+        }
+        else if (applyResult.pasteScheduled) {
+          setStatus("已安排回填", "warn");
+          setSendGuard("danger", "先确认输入框", "整理文本已安排后台回填，但页面无法确认已经进入 Codex 输入框。请确认内容正确后再发送。");
+          setAutoApplyState("已检测到新语音，整理文本已写入剪贴板并安排后台回填。请确认 Codex 输入框内容后再发送。", "warn");
         }
         else {
-          setStatus("已自动整理", "saved");
-          setSendGuard("ready", "可以发送", "已自动整理并安排回填。请确认 Codex 输入框内容正确后再发送。");
-          setAutoApplyState("已检测到新语音，整理文本已写入剪贴板并安排回填。确认输入框内容正确后可以发送。", "saved");
+          setStatus("已复制到剪贴板", "warn");
+          setSendGuard("danger", "请先不要发送", "整理文本已写入剪贴板，但没有确认进入 Codex 输入框。请手动粘贴或确认输入框内容后再发送。");
+          setAutoApplyState("已检测到新语音，整理文本已写入剪贴板。未确认进入 Codex 输入框，请手动确认后再发送。", "warn");
         }
 
-        startSentTextMonitor(result.finalText || result.polishedText || result.rawText || "", {
-          afterTimestamp: new Date().toISOString(),
-          autoSave: true
-        });
+        if (applyResult.pastedImmediately || applyResult.pasteScheduled) {
+          startSentTextMonitor(result.finalText || result.polishedText || result.rawText || "", {
+            afterTimestamp: new Date().toISOString(),
+            autoSave: true
+          });
+        }
       }
       catch {
         setSendGuard("danger", "请先不要发送", "自动应用检查失败。请确认服务仍在运行，或手动粘贴整理文本。");

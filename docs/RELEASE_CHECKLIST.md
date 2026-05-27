@@ -29,6 +29,7 @@ Get-ChildItem ".\scripts" -Filter *.ps1 | ForEach-Object {
 }
 
 dotnet build ".\tools\CodexVoicePromptBridge\CodexVoicePromptBridge.csproj" -c Release
+powershell -NoProfile -ExecutionPolicy Bypass -File ".\tests\Run-VoiceBridgeGoldenCases.ps1"
 dotnet build ".\tools\TypeWhisperT2S\TypeWhisperT2S.csproj" -c Release
 ```
 

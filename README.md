@@ -45,6 +45,8 @@ A local-first Windows bridge for people who use voice input with Codex and want 
 - **Local-first**: 默认不调用云端 API，不上传语音文本。
 - **Codex-aware**: 优先读取 `%USERPROFILE%\.codex\transcription-history.jsonl` 中的 Codex 语音识别结果。
 - **Prompt-oriented**: 默认把口述整理成更短、更清楚、更可执行的 Codex 请求。
+- **Conservative structure planning**: v0.2.0 起默认不因普通数字、端口、版本号或整理规则里的“拆分/要点”误分条，只有明确枚举或高置信多任务才输出列表。
+- **Golden-case tested**: 包含机器可读 golden case 和 runner，用于验证数字、路径、否定、疑问、专有名词和结构化输出边界。
 - **Rule visible**: 网页里有专门的“整理文本规则”位置，规则会传给本地整理器。
 - **Reviewable**: 提供本地校准网页，可以对照原始识别、自动整理和人工最终文本。
 - **Safer defaults**: 持续学习、自动应用到输入框、随 Codex 启动都默认关闭。
@@ -64,6 +66,8 @@ CodexVoicePromptBridge
   - filler cleanup
   - common term correction
   - oral-to-standard rewrite rules
+  - conservative structure decision
+  - literal span protection
   - prompt-oriented compression
         |
         v
@@ -80,10 +84,10 @@ The project deliberately avoids writing Codex private storage, unknown IPC, or i
 - 保留事实、否定、时间、数字、路径、文件名、专有名词和条件。
 - 删除不承载意义的口头禅、重复句、犹豫词和自我打断。
 - 对“不是 A，是 B”“不对，改成 B”以后者为准。
-- 将多件事拆成 `1、2、3`，每项尽量写成“动作 + 对象 + 验证/交付要求”。
+- 只在明确枚举、明确步骤请求或高置信多任务信号下拆成 `1、2、3`；普通数字、端口、版本号、型号、时间、快捷键和模糊数量不会单独触发分条。
 - 遇到关键歧义时保留“需确认”，不编造用户没有说过的信息。
 
-完整规则草案见 [docs/ORAL_TO_STANDARD_RULES_DRAFT.md](docs/ORAL_TO_STANDARD_RULES_DRAFT.md)。
+完整规则草案见 [docs/ORAL_TO_STANDARD_RULES_DRAFT.md](docs/ORAL_TO_STANDARD_RULES_DRAFT.md)，v0.2.0 结构规划见 [docs/voice-text-rule-optimization-plan-v0.2.0.md](docs/voice-text-rule-optimization-plan-v0.2.0.md)。
 
 ## Quick Start
 
@@ -124,6 +128,21 @@ powershell -STA -NoProfile -ExecutionPolicy Bypass -File ".\scripts\Invoke-Codex
 powershell -STA -NoProfile -ExecutionPolicy Bypass -File ".\scripts\Invoke-CodexVoiceBridge.ps1" -Mode CodexHistory -NoPaste -Print
 ```
 
+### Run Golden Cases
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File ".\tests\Run-VoiceBridgeGoldenCases.ps1"
+```
+
+### Inspect Structure Decisions
+
+```powershell
+$inputFile = New-TemporaryFile
+[System.IO.File]::WriteAllText($inputFile, "请按步骤处理，首先读取 AGENTS.md，其次运行剪贴板测试，最后给我结论。", [System.Text.UTF8Encoding]::new($false))
+& ".\tools\CodexVoicePromptBridge\bin\Release\net10.0\CodexVoicePromptBridge.exe" --input-file $inputFile --debug-decision
+Remove-Item -LiteralPath $inputFile -Force
+```
+
 ## Copy This Prompt Into Codex To Install
 
 If you want Codex to install this helper for you, copy this prompt into Codex:
@@ -139,6 +158,7 @@ If you want Codex to install this helper for you, copy this prompt into Codex:
 config/                         Safe default settings and onboarding topics
 docs/                           Design notes, workflow docs, release checklist
 scripts/                        PowerShell service, bridge, cleanup, task helpers
+tests/                          Golden case regression tests for the text bridge
 tools/CodexVoicePromptBridge/   Main C# text polishing bridge
 tools/TypeWhisperT2S/           Legacy helper and conversion table
 web/                            Local review panel and settings page
@@ -158,11 +178,12 @@ See [SECURITY.md](SECURITY.md) for the security policy and [docs/RELEASE_CHECKLI
 
 ## Current Status
 
-This is an early public release package. The core workflow is usable, but the project is still conservative by design:
+This is an early public release package. v0.2.0 includes the conservative structure-planning MVP and a clearer refill status loop. The core workflow is usable, but the project is still conservative by design:
 
 - It is Windows-first.
 - It uses rule-based text polishing, not full semantic LLM rewriting.
 - It relies on clipboard/focus automation for input refill, because Codex does not currently expose a stable public composer write API.
+- Strong rewrite mode and broader block-level filler cleanup are still future work.
 - The project is licensed under Apache-2.0.
 
 ## Roadmap
@@ -191,6 +212,7 @@ Start with:
 - [Release Checklist](docs/RELEASE_CHECKLIST.md)
 - [Release Manifest](docs/RELEASE_MANIFEST.md)
 - [Oral To Standard Rules Draft](docs/ORAL_TO_STANDARD_RULES_DRAFT.md)
+- [Voice Text Rule Optimization Plan v0.2.0](docs/voice-text-rule-optimization-plan-v0.2.0.md)
 - [Development Handbook](docs/development-handbook.md)
 - [Onboarding Calibration](docs/onboarding-calibration.md)
 - [Changelog](CHANGELOG.md)

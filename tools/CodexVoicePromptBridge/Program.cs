@@ -1,4 +1,6 @@
-﻿using System.Text;
+using System.Text;
+using System.Text.Encodings.Web;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 
 Console.InputEncoding = Encoding.UTF8;
@@ -6,13 +8,20 @@ Console.OutputEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false
 
 if (args.Any(arg => arg is "-h" or "--help"))
 {
-    Console.WriteLine("Reads Codex voice-recognition text from stdin or --input-file and writes a prompt-friendly version to stdout or --output-file. Optional: --rewrite-rule.");
+    Console.WriteLine("Reads Codex voice-recognition text from stdin or --input-file and writes a prompt-friendly version to stdout or --output-file. Optional: --rewrite-rule, --debug-decision, --version.");
+    return;
+}
+
+if (args.Any(arg => arg is "--version"))
+{
+    Console.WriteLine("CodexVoicePromptBridge 0.2.0");
     return;
 }
 
 var inputFile = GetOptionValue(args, "--input-file");
 var outputFile = GetOptionValue(args, "--output-file");
 var rewriteRule = NormalizeRewriteRule(GetOptionValue(args, "--rewrite-rule"));
+var debugDecision = args.Any(arg => string.Equals(arg, "--debug-decision", StringComparison.OrdinalIgnoreCase));
 
 var input = inputFile is null
     ? await Console.In.ReadToEndAsync()
@@ -22,7 +31,22 @@ if (string.IsNullOrWhiteSpace(input))
     return;
 
 var map = LoadCharacterMap();
-var normalized = NormalizeForCodexPrompt(ConvertTraditionalToSimplified(input, map), rewriteRule);
+var simplifiedInput = ConvertTraditionalToSimplified(input, map);
+if (debugDecision)
+{
+    var decisionInput = ApplyNaturalChineseWordOrder(ApplyInstructionReplacements(PrepareStructureDecisionText(simplifiedInput)));
+    var decision = BuildStructureDecision(decisionInput);
+    var jsonOptions = new JsonSerializerOptions
+    {
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        WriteIndented = true
+    };
+    Console.Write(JsonSerializer.Serialize(decision, jsonOptions));
+    return;
+}
+
+var normalized = NormalizeForCodexPrompt(simplifiedInput, rewriteRule);
 
 if (outputFile is null)
     Console.Write(normalized);
@@ -92,6 +116,24 @@ static string ConvertTraditionalToSimplified(string input, IReadOnlyDictionary<c
 static string NormalizeForCodexPrompt(string text, string rewriteRule)
 {
     rewriteRule = NormalizeRewriteRule(rewriteRule);
+    var cleaned = PrepareStructureDecisionText(text);
+    cleaned = ApplyInstructionReplacements(cleaned);
+    cleaned = ApplyNaturalChineseWordOrder(cleaned);
+    var structureDecision = BuildStructureDecision(cleaned);
+
+    cleaned = ApplyPromptEngineeringCompression(cleaned, rewriteRule);
+    cleaned = SplitObviousMultipleRequests(cleaned);
+    cleaned = ApplyNaturalChineseWordOrder(cleaned);
+    cleaned = ApplyPromptEngineeringCompression(cleaned, rewriteRule);
+    cleaned = NormalizePunctuation(cleaned);
+    cleaned = CollapsePromptCompressionSummary(cleaned);
+    cleaned = ApplyRuleDrivenPromptStructure(cleaned, structureDecision);
+
+    return cleaned.Trim();
+}
+
+static string PrepareStructureDecisionText(string text)
+{
     var cleaned = text
         .Replace("\r\n", "\n")
         .Replace('\r', '\n')
@@ -103,17 +145,7 @@ static string NormalizeForCodexPrompt(string text, string rewriteRule)
     cleaned = Regex.Replace(cleaned, @"[ \t]+", " ");
     cleaned = Regex.Replace(cleaned, @"\s*\n\s*", "\n");
     cleaned = RemoveSpeechFillers(cleaned);
-
-    cleaned = ApplyInstructionReplacements(cleaned);
-    cleaned = ApplyNaturalChineseWordOrder(cleaned);
-    cleaned = ApplyPromptEngineeringCompression(cleaned, rewriteRule);
-    cleaned = SplitObviousMultipleRequests(cleaned);
-    cleaned = ApplyNaturalChineseWordOrder(cleaned);
-    cleaned = ApplyPromptEngineeringCompression(cleaned, rewriteRule);
     cleaned = NormalizePunctuation(cleaned);
-    cleaned = CollapsePromptCompressionSummary(cleaned);
-    cleaned = ApplyRuleDrivenPromptStructure(cleaned, rewriteRule);
-
     return cleaned.Trim();
 }
 
@@ -138,7 +170,7 @@ static string NormalizeEnglishTermTranscriptions(string text)
         (@"泰普\s*威斯珀|泰普\s*维斯珀|type\s*威斯珀|type\s*维斯珀", "TypeWhisper"),
         (@"威斯珀|维斯珀|wisper", "Whisper"),
         (@"盖特哈布|给特哈布|git\s*hub", "GitHub"),
-        (@"泡儿?shell|泡尔?shell|power\s*壳|powershell", "PowerShell"),
+        (@"泡儿?\s*shell|泡尔?\s*shell|power\s*壳|powershell", "PowerShell"),
         (@"爪哇\s*script|java\s*script", "JavaScript"),
         (@"type\s*script|泰普\s*script", "TypeScript"),
         (@"派森|派桑|python", "Python"),
@@ -167,7 +199,12 @@ static string NormalizeEnglishTermTranscriptions(string text)
 
 static string RemoveSpeechFillers(string text)
 {
-    var cleaned = Regex.Replace(text, @"^((那么|嗯|呃|额|啊|那个|这个|就是|然后|好的|好|那)[，,\s]*)+", "");
+    var cleaned = Regex.Replace(text, @"^(嗯|呃|额|啊)?\s*然后的话[，,\s]*", "");
+    cleaned = Regex.Replace(cleaned, @"^(嗯|呃|额|啊)?\s*然后\s*就是\s*说[，,\s]*", "");
+    cleaned = Regex.Replace(cleaned, @"^(嗯|呃|额|啊)?\s*就是说[，,\s]*", "");
+    cleaned = Regex.Replace(cleaned, @"^((那么|嗯|呃|额|啊|那个|这个|就是|然后|好的|好|那)[，,\s]*)+", "");
+    cleaned = Regex.Replace(cleaned, @"(?<=[，。！？、\s])(怎么说呢|反正就是|大概就是说|就是说)(?=[，。！？、\s])", "");
+    cleaned = Regex.Replace(cleaned, @"(?<=[，,])就是(?=(先|请|帮|把|看|检查|给))", "");
     cleaned = Regex.Replace(cleaned, @"(比如|例如)[，,、\s]*(然后|嗯|呃|额|啊|那个|这个|就是)[啊呃嗯额]*(什么的|之类的)", "$1“$2”等");
     cleaned = Regex.Replace(cleaned, @"(然后|嗯|呃|额|啊|那个|这个|就是)[啊呃嗯额]+(?=(什么的|之类的|等等|等|[，。！？、,\s]|$))", "$1");
     cleaned = Regex.Replace(cleaned, @"(?<=[\u4e00-\u9fffA-Za-z0-9])啊(?=(什么的|之类的|等等|等|[，。！？、,\s]|$))", "");
@@ -191,6 +228,8 @@ static string ApplyInstructionReplacements(string text)
         ("我想让你", "请"),
         ("我希望你就是", "请"),
         ("我希望你", "请"),
+        ("给我方案", "给出方案"),
+        ("给我结论", "给出结论"),
         ("我想修改", "请修改"),
         ("我想改", "请修改"),
         ("你来帮我", "请帮我"),
@@ -225,6 +264,8 @@ static string ApplyInstructionReplacements(string text)
         cleaned = cleaned.Replace(pattern, replacement, StringComparison.Ordinal);
 
     cleaned = Regex.Replace(cleaned, @"^现在请", "请");
+    cleaned = Regex.Replace(cleaned, @"^你帮我看一下", "请检查");
+    cleaned = Regex.Replace(cleaned, @"^帮我看一下", "请检查");
     cleaned = Regex.Replace(cleaned, @"请让在安装的时候", "请在安装时");
     cleaned = Regex.Replace(cleaned, @"就配置这个插件的时候", "配置这个插件时");
     cleaned = Regex.Replace(cleaned, @"它的读的这个语音样本", "它朗读的语音样本");
@@ -358,33 +399,38 @@ static string NormalizePunctuation(string text)
     cleaned = Regex.Replace(cleaned, @"[，,]\s*", "，");
     cleaned = Regex.Replace(cleaned, @"[。]\s*", "。");
     cleaned = Regex.Replace(cleaned, @"[；;]\s*", "；");
-    cleaned = Regex.Replace(cleaned, @"[：:]\s*", "：");
+    cleaned = Regex.Replace(cleaned, @"(?<![A-Za-z0-9])[：:]\s*", "：");
     cleaned = Regex.Replace(cleaned, @"[ \t]+", " ");
     cleaned = Regex.Replace(cleaned, @"\s*\n\s*", "\n");
     return cleaned.Trim();
 }
 
-static string ApplyRuleDrivenPromptStructure(string text, string rewriteRule)
+static string ApplyRuleDrivenPromptStructure(string text, StructureDecision decision)
 {
-    rewriteRule = NormalizeRewriteRule(rewriteRule);
-    if (!ShouldPreferStructuredPrompt(text, rewriteRule))
+    if (!decision.ShouldList)
         return text;
 
+    string? candidate = null;
     if (TryFormatCalibrationRound(text, out var calibrationText))
-        return calibrationText;
+        candidate = calibrationText;
 
-    if (TryFormatReturnFlowTest(text, out var returnFlowTestText))
-        return returnFlowTestText;
+    if (candidate is null && TryFormatReturnFlowTest(text, out var returnFlowTestText))
+        candidate = returnFlowTestText;
 
-    var items = ExtractPromptItems(text);
-    if (items.Count < 2)
-        return text;
+    if (candidate is null)
+    {
+        var items = ExtractPromptItems(text, decision);
+        if (items.Count < 2)
+            return text;
 
-    var builder = new StringBuilder();
-    for (var i = 0; i < Math.Min(5, items.Count); i++)
-        builder.AppendLine($"{i + 1}. {EnsureSentence(items[i])}");
+        var builder = new StringBuilder();
+        for (var i = 0; i < Math.Min(5, items.Count); i++)
+            builder.AppendLine($"{i + 1}. {EnsureSentence(items[i])}");
 
-    return builder.ToString().Trim();
+        candidate = builder.ToString().Trim();
+    }
+
+    return ValidateStructuredOutput(text, candidate, decision) ? candidate : text;
 }
 
 static bool TryFormatCalibrationRound(string text, out string formatted)
@@ -441,20 +487,79 @@ static bool TryFormatReturnFlowTest(string text, out string formatted)
     return true;
 }
 
-static bool ShouldPreferStructuredPrompt(string text, string rewriteRule)
+static StructureDecision BuildStructureDecision(string text)
 {
-    if (string.IsNullOrWhiteSpace(rewriteRule))
-        return text.Length > 180 && Regex.IsMatch(text, @"(另外|还有|第一|第二|一个|另一个|下一步|规则|要点)");
+    var normalized = NormalizePunctuation(text);
+    var protectedSpans = DetectLiteralSpans(normalized);
+    var reasons = new List<string>();
+    var confidence = 0.0;
 
-    return Regex.IsMatch(
-        rewriteRule,
-        @"(整体意图|重组|拆分|总结|要点|压缩|token|提示词|高效|一二三|1\s*[、.．]|2\s*[、.．])",
-        RegexOptions.IgnoreCase);
+    var hasQuestionIntent = Regex.IsMatch(normalized, @"(是不是|是否|能不能|可不可以|有没有|要不要|吗[？?]?|[？?])");
+    if (hasQuestionIntent)
+        reasons.Add("question_intent");
+
+    var explicitEnumMatches = Regex.Matches(
+        normalized,
+        @"(第一(?:个|点)?|第二(?:个|点)?|第三(?:个|点)?|第四(?:个|点)?|首先|其次|再次|最后)");
+    var hasExplicitQuantityIntent = Regex.IsMatch(
+        normalized,
+        @"(有[一二两三四五六七八九十0-9]+(?:件事|个点|点|项)|分成[一二两三四五六七八九十0-9]+(?:点|条|项)|列成\s*(?:1|一)[、,.，]\s*(?:2|二)|分别是)");
+    var hasStepRequest = Regex.IsMatch(normalized, @"(按步骤|分条|拆成要点|列成|列出|分点|分成.+(?:点|条|项))");
+
+    if (explicitEnumMatches.Count >= 2 || hasExplicitQuantityIntent)
+    {
+        reasons.Add("explicit_enum");
+        confidence = Math.Max(confidence, 0.88);
+    }
+
+    if (hasStepRequest)
+    {
+        reasons.Add("explicit_step_request");
+        confidence = Math.Max(confidence, explicitEnumMatches.Count >= 1 ? 0.9 : 0.78);
+    }
+
+    var hasSequenceOnly = Regex.IsMatch(normalized, @"先.+然后.+(最后|再|接着)");
+    if (hasSequenceOnly && !hasStepRequest && !hasExplicitQuantityIntent && explicitEnumMatches.Count < 2)
+    {
+        reasons.Add("sequence_only");
+        confidence = Math.Max(confidence, 0.45);
+    }
+
+    var connectorCount = Regex.Matches(normalized, @"(另外|还有|同时|再帮我|最后)").Count;
+    var commandCount = Regex.Matches(normalized, @"(请|检查|更新|运行|打开|读取|生成|保存|修复|实现|确认|验证|处理|同步|补充|输出|给出)").Count;
+    if (connectorCount >= 2 && commandCount >= 3)
+    {
+        reasons.Add("multi_task");
+        confidence = Math.Max(confidence, 0.76);
+    }
+
+    if (protectedSpans.Count > 0 && reasons.Count == 0)
+    {
+        reasons.Add("protected_number_only");
+        confidence = Math.Max(confidence, 0.2);
+    }
+
+    if (hasQuestionIntent && !hasStepRequest && !hasExplicitQuantityIntent && explicitEnumMatches.Count < 2)
+        confidence = Math.Min(confidence, 0.55);
+
+    if (reasons.Count == 0)
+        reasons.Add("plain_paragraph");
+
+    var shouldList = confidence >= 0.75 &&
+        (reasons.Contains("explicit_enum") || reasons.Contains("explicit_step_request") || reasons.Contains("multi_task"));
+
+    return new StructureDecision(
+        Mode: "conservative",
+        ShouldList: shouldList,
+        Confidence: Math.Round(confidence, 2),
+        Reasons: reasons.Distinct().ToList(),
+        ProtectedSpanCount: protectedSpans.Count,
+        ProtectedSpans: protectedSpans);
 }
 
-static List<string> ExtractPromptItems(string text)
+static List<string> ExtractPromptItems(string text, StructureDecision decision)
 {
-    var knownItems = ExtractKnownVoiceBridgeItems(text);
+    var knownItems = decision.ShouldList ? ExtractKnownVoiceBridgeItems(text) : [];
     if (knownItems.Count >= 2)
         return knownItems;
 
@@ -467,7 +572,7 @@ static List<string> ExtractPromptItems(string text)
     working = Regex.Replace(working, @"(第二个点|第二个|第二点|第二|其次)[呢嘛]?[，,、\s]*(就是|是)?", "\n§");
     working = Regex.Replace(working, @"(第三个点|第三个|第三点|第三|再次)[呢嘛]?[，,、\s]*(就是|是)?", "\n§");
     working = Regex.Replace(working, @"(第四个点|第四个|第四点|第四|最后)[呢嘛]?[，,、\s]*(就是|是)?", "\n§");
-    working = Regex.Replace(working, @"(一个就是|一个是|另一个就是|另一个是|另外就是|另外是|还有就是|还有是|下一步的话|下一步)", "\n§");
+    working = Regex.Replace(working, @"(一个就是|一个是|另一个就是|另一个是|另外就是|另外是|还有就是|还有是|下一步的话)", "\n§");
 
     var rawParts = working
         .Split("§", StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
@@ -478,10 +583,13 @@ static List<string> ExtractPromptItems(string text)
     foreach (var rawPart in rawParts)
     {
         var item = CleanPromptItem(rawPart);
-        if (item.Length < 8)
+        if (item.Length < 3)
             continue;
 
         if (Regex.IsMatch(item, @"^(这一轮|这里|这边|我发现|是吧|对吧|那么|那这里)"))
+            continue;
+
+        if (Regex.IsMatch(item, @"^(我)?有[一二两三四五六七八九十0-9]+(件事|个点|点|项)$|^请按步骤处理$"))
             continue;
 
         if (items.Any(existing => string.Equals(existing, item, StringComparison.Ordinal)))
@@ -494,7 +602,7 @@ static List<string> ExtractPromptItems(string text)
     {
         var splitItems = Regex.Split(items[0], @"[；;，,](?=(请|把|让|优化|实现|修正|去除|总结|压缩|保留|根据|生成))")
             .Select(CleanPromptItem)
-            .Where(item => item.Length >= 8)
+            .Where(item => item.Length >= 3)
             .Distinct()
             .ToList();
         if (splitItems.Count >= 2)
@@ -523,6 +631,105 @@ static List<string> ExtractKnownVoiceBridgeItems(string text)
     return items.Distinct().ToList();
 }
 
+static List<LiteralSpan> DetectLiteralSpans(string text)
+{
+    var spans = new List<LiteralSpan>();
+
+    AddMatches(spans, text, @"(?<!\d)(?:\d{1,3}\.){3}\d{1,3}:\d+(?!\d)", "endpoint");
+    AddMatches(spans, text, @"(?<![\w.])(?:v\d+(?:\.\d+){1,3}|net\d+(?:\.\d+){1,2})(?![\w.])", "version", RegexOptions.IgnoreCase);
+    AddMatches(spans, text, @"(?<![A-Za-z0-9])A\d+(?:-v\d+)?(?![A-Za-z0-9])", "voice_model", RegexOptions.IgnoreCase);
+    AddMatches(spans, text, @"(?<![A-Za-z0-9])[-+]?\d+(?:\.\d+)?\s*(?:ms|毫秒|秒钟?|分钟|小时|天|MB|GB|KB|%|Hz|条|个|次|元)(?![A-Za-z0-9])", "number");
+    AddMatches(spans, text, @"(?<![A-Za-z0-9])Ctrl(?:\s*\+\s*[A-Za-z0-9]+)+(?![A-Za-z0-9])", "shortcut", RegexOptions.IgnoreCase);
+    AddMatches(spans, text, @"(?:[A-Za-z]:\\[^\s，。！？；;]+|(?:\.{1,2}[\\/])?[A-Za-z0-9_.-]+[\\/][^\s，。！？；;]+|/[A-Za-z0-9_.-][^\s，。！？；;]*)", "path");
+    AddMatches(spans, text, @"(?<![\w])[\w.-]+\.(?:md|cs|jsonl?|ps1|html|exe|dll|csproj)(?![\w])", "file");
+    AddMatches(spans, text, @"(不要|不能|不是|不接|不改|未|没有|不得|禁止|只保留|只做|(?<!识)别)", "negative");
+    AddMatches(spans, text, @"(如果|除非|只要|当.+?时|在.+?前提下)", "condition");
+    AddMatches(spans, text, @"(是不是|是否|能不能|可不可以|有没有|要不要|[？?])", "question");
+    AddMatches(spans, text, @"(可能|大概|也许|暂时|先暂时|不确定|需确认)", "uncertainty");
+    AddMatches(spans, text, @"(优先|必须|务必|阻断级|发布默认|个人机器)", "priority");
+    AddMatches(spans, text, @"(?<![A-Za-z])(Codex|TypeWhisper|Whisper|GitHub|PowerShell|JavaScript|TypeScript|Python|JSONL?|YAML|Markdown|LLM|API|AI|UI|README|localhost|ProseMirror|Program\.cs)(?![A-Za-z])", "proper_noun", RegexOptions.IgnoreCase);
+    AddMatches(spans, text, @"(两三个|一两分钟|十来个|半小时|一会儿|几个|一堆|一点|一下)", "fuzzy_quantity");
+
+    return spans
+        .GroupBy(span => $"{span.Start}:{span.Length}:{span.Category}")
+        .Select(group => group.First())
+        .OrderBy(span => span.Start)
+        .ThenByDescending(span => span.Length)
+        .ToList();
+}
+
+static void AddMatches(List<LiteralSpan> spans, string text, string pattern, string category, RegexOptions options = RegexOptions.None)
+{
+    foreach (Match match in Regex.Matches(text, pattern, options))
+    {
+        if (!match.Success || string.IsNullOrWhiteSpace(match.Value))
+            continue;
+
+        spans.Add(new LiteralSpan(match.Index, match.Length, match.Value, category));
+    }
+}
+
+static bool ValidateStructuredOutput(string originalText, string candidate, StructureDecision decision)
+{
+    if (string.IsNullOrWhiteSpace(candidate))
+        return false;
+
+    var itemMatches = Regex.Matches(candidate, @"(?m)^\s*\d+[\.、．]\s*\S+");
+    if (itemMatches.Count < 2 || itemMatches.Count > 5)
+        return false;
+
+    var lines = candidate
+        .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        .Where(line => Regex.IsMatch(line, @"^\d+[\.、．]\s*"))
+        .Select(line => Regex.Replace(line, @"^\d+[\.、．]\s*", "").Trim())
+        .ToList();
+
+    if (lines.Count != itemMatches.Count)
+        return false;
+
+    if (lines.Any(line => line.Length < 4 || !LooksLikeActionableItem(line)))
+        return false;
+
+    foreach (var span in decision.ProtectedSpans.Where(ShouldPreserveSpanInStructuredOutput))
+    {
+        if (!ContainsRelaxed(candidate, span.Text))
+            return false;
+    }
+
+    if (Regex.IsMatch(originalText, @"(是不是|是否|能不能|可不可以|有没有|要不要|[？?])") &&
+        !Regex.IsMatch(candidate, @"(是不是|是否|能不能|可不可以|有没有|要不要|[？?])"))
+    {
+        return false;
+    }
+
+    return true;
+}
+
+static bool LooksLikeActionableItem(string line)
+{
+    return Regex.IsMatch(
+        line,
+        @"(请|检查|更新|运行|打开|读取|生成|保存|修复|实现|确认|验证|处理|同步|补充|输出|给出|给我|结论|保留|删除|不要|不接|看|跑|改|做|启动|回填)");
+}
+
+static bool ShouldPreserveSpanInStructuredOutput(LiteralSpan span)
+{
+    return span.Category is
+        "endpoint" or "version" or "voice_model" or "number" or "shortcut" or
+        "path" or "file" or "negative" or "condition" or "question" or
+        "uncertainty" or "priority" or "proper_noun";
+}
+
+static bool ContainsRelaxed(string haystack, string needle)
+{
+    static string NormalizeComparable(string value) =>
+        Regex.Replace(value, @"\s+", "", RegexOptions.None).ToLowerInvariant();
+
+    var normalizedHaystack = NormalizeComparable(haystack);
+    var normalizedNeedle = NormalizeComparable(needle);
+    return normalizedNeedle.Length == 0 || normalizedHaystack.Contains(normalizedNeedle, StringComparison.Ordinal);
+}
+
 static string CleanPromptItem(string item)
 {
     var cleaned = item.Trim('，', ',', '。', '；', ';', '：', ':', ' ', '\t', '\n');
@@ -533,6 +740,7 @@ static string CleanPromptItem(string item)
     cleaned = Regex.Replace(cleaned, @"这样的话就很不好", "");
     cleaned = Regex.Replace(cleaned, @"^你\s+", "");
     cleaned = Regex.Replace(cleaned, @"^你的\s+", "");
+    cleaned = Regex.Replace(cleaned, @"^给我结论$", "给出结论");
     cleaned = Regex.Replace(cleaned, @"这个+", "这个");
     cleaned = Regex.Replace(cleaned, @"整理文本规则这块还有对于原始文本的这个作用啊", "优化整理文本规则对原始文本的作用");
     cleaned = Regex.Replace(cleaned, @"根据这边整理文本的规则，?去生成一个我们比较满意的初步文本", "根据整理文本规则生成更满意的初步文本");
@@ -566,3 +774,13 @@ static (char Traditional, char Simplified)[] GetFallbackPairs() =>
     ('後', '后'), ('與', '与'), ('為', '为'), ('時', '时'), ('長', '长'),
     ('應', '应'), ('現', '现'), ('態', '态'), ('內', '内'), ('容', '容')
 ];
+
+public sealed record LiteralSpan(int Start, int Length, string Text, string Category);
+
+public sealed record StructureDecision(
+    string Mode,
+    bool ShouldList,
+    double Confidence,
+    List<string> Reasons,
+    int ProtectedSpanCount,
+    List<LiteralSpan> ProtectedSpans);

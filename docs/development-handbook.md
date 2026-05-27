@@ -1,4 +1,4 @@
-﻿# Development Handbook
+# Development Handbook
 
 本文是当前项目 `语音输入提炼矫正` 的维护手册。
 
@@ -89,6 +89,8 @@ TypeWhisper 过去看起来能“自动填入 Codex 输入框”，本质不是 
 
 它仍不能保证像 LLM 一样理解所有长段口述。当前压缩和结构化是规则级、启发式；要做到稳定的语义级总结，需要接入 LLM API，或等待 Codex 提供可编程的语音识别结果钩子。
 
+2026-05-27 v0.2.0 MVP 已落地：整理器新增保守结构规划和结构决策调试入口。结构判断基于原始口述的早期规范化文本，不再读取默认整理规则里的“拆分、总结、要点、提示词”等词作为分条触发；默认阈值为 `confidence >= 0.75`。分条前会统计 `LiteralSpan`，保护数字、路径、版本号、声音参数、快捷键、否定、条件、疑问、不确定性、优先级、专有名词和近音技术词。所有列表输出路径都要先经过 `StructureDecision`，再经过结构化输出校验；校验失败时直接回退普通段落。
+
 ### 2.5 该验证就验证
 
 修改后至少做最小闭环验证，而不只是改文档：
@@ -96,12 +98,14 @@ TypeWhisper 过去看起来能“自动填入 Codex 输入框”，本质不是 
 - 整理器可以发布或运行。
 - 示例中文输入输出不乱码。
 - 剪贴板模式可以运行。
+- v0.2.0 golden case 通过。
 - 如果修改回填脚本，确认 `powershell -STA` 路径可用。
 - 只有涉及 TypeWhisper 备用链路时，才需要验证 TypeWhisper API 状态。
 
 ## 3. 当前关键文件
 
 - `AGENTS.md`：Codex 工作规则、项目边界和协作方法。
+- `PROJECT-STATUS.md`：未来 Codex / 维护者进入项目时的总览入口，记录当前状态、架构地图、技术路线、执行规范和后续规划。
 - `TypeWhisper-Codex-Workflow.md`：当前 Codex 自带语音识别中介工作流和方案取舍。
 - `scripts/Invoke-CodexVoiceBridge.ps1`：读取 Codex 语音历史/剪贴板/尝试复制焦点文本、调用整理器、写回剪贴板、粘贴到输入框的中介脚本。
 - `scripts/Serve-ReviewPanel.ps1`：本地审核页服务，供 Codex in-app browser 打开 `http://127.0.0.1:8793/review-panel.html`，同时提供校准中心 API，包括 `/api/latest-codex-transcription`、`/api/polish` 和 `/api/apply-final-text`。
@@ -111,8 +115,12 @@ TypeWhisper 过去看起来能“自动填入 Codex 输入框”，本质不是 
 - `scripts/Register-VoiceFeedbackDailyTask.ps1`：可选的 Windows 任务计划注册脚本；只有用户确认后才运行。
 - `tools/CodexVoicePromptBridge/Program.cs`：Codex 语音输入文本整理器源码。
 - `tools/CodexVoicePromptBridge/publish-self-contained/CodexVoicePromptBridge.exe`：当前可直接调用的本地整理器。
+- `tests/golden/voice-text-rule-cases.jsonl`：v0.2.0 机器可读 golden case，覆盖数字/端口、路径/版本、声音参数、明确枚举、口头禅、否定、条件、疑问、不确定性、连续动作、近音技术词和模糊数量。
+- `tests/Run-VoiceBridgeGoldenCases.ps1`：golden case runner，会同时检查整理文本和 `--debug-decision` 输出；只测整理器，不碰剪贴板、窗口焦点或真实 Codex 回填。
 - `config/onboarding-topic-prompts.json`：安装期分层话题式自由口述提示，按轻松聊天、日常规划、工作任务和思考推理分层。
 - `config/voice-feedback-settings.json`：持续学习开关、每日迭代时间、固定配置入口偏好、主动校准热键、自动应用开关、记录目录、清理保留策略和隐私边界设置，默认关闭持续学习和自动应用。
+- `docs/voice-text-rule-optimization-plan-v0.2.0.md`：当前语音转文字整理规则优化实施规划，整合多子模型评审、主负责人审批、阶段计划、隐私门槛和最小测试集；涉及口头禅、数字误分条和结构化输出时优先阅读。
+- `docs/voice-text-rule-optimization-plan.md`：v0.1.0 草案记录，保留方案演进背景。
 - `docs/onboarding-calibration.md`：安装期分层话题校准和个人语言习惯配置设计草案。
 - `web/review-panel.html`：Codex 右侧浏览器可打开的本地审核面板，展示原始识别、自动整理和可编辑最终文本。
 - `web/settings.html`：固定配置入口的语音校准中心，包含隐私说明、配置概览、持续学习、访问与启动、主动校准；“整理文本规则”会直接传给 `CodexVoicePromptBridge.exe`，保存后成为下次默认规则；“自动应用到输入框”开启后会持续轮询 Codex 最新语音历史，默认每 500ms 检查一次，发现新转写后调用 `/api/auto-apply-codex-transcription` 自动整理并尝试回填 Codex composer；页面顶部会显示发送保护提示，提醒用户等状态显示“可以发送”后再点击 Codex 发送；“开始校正”保留为手动校准流程，会在前台每 3 秒轮询 Codex 最新语音历史，发现新转写后自动导入整理；“保存样本”只有在最终发送文本不同于自动整理文本时才写入本机 JSONL，并展示保存路径或无差异跳过原因；“更新规则”会读取本机样本生成候选替换文件、触发自动清理并展示候选规则路径；后续 `/api/polish` 和自动应用接口会把候选替换作为精确替换应用到自动整理文本；“确认回填”会把发送给 Codex 的最终文本写入剪贴板，并尝试聚焦 Codex 底部 composer，成功后先全选原内容再粘贴；“发送后旁路确认”会在回填后短时间轮询 Codex 本地 `sessions\...\*.jsonl` 用户消息记录，命中相似新增消息后同步最终文本并尝试保存样本；“回填校验结果”显示最近一次回填状态、路径、目标窗口、延迟和跳过原因；备用入口降级为默认收起的高级诊断工具。
@@ -122,12 +130,12 @@ TypeWhisper 过去看起来能“自动填入 Codex 输入框”，本质不是 
 ## 4. 推荐工作流
 
 1. 先确认用户要解决的是识别速度、识别准确率、提示词整理质量，还是回填自动化。
-2. 读取当前文档和相关脚本。
+2. 读取当前文档和相关脚本；新任务优先读 `AGENTS.md`、`PROJECT-STATUS.md`、`TypeWhisper-Codex-Workflow.md` 和 `docs/development-handbook.md`。
 3. 先判断能否使用 Codex 本地语音历史；只有用户选择 TypeWhisper 或本地 Whisper 方案时才检查对应状态。
 4. 小范围修改整理规则或回填脚本。
 5. 跑最小验证。
 6. 把重要结论写回项目文档。
-7. 本项目产物不实现回复朗读/TTS；但 Codex 对用户的回复播报仍按 `外部 TTS 工作流` 项目的既有规则执行。需要播报时直接调用那个项目的脚本，不在本项目新增包装器或复制播报逻辑。
+7. 本项目产物不实现回复朗读/TTS；但 Codex 对用户的回复播报仍按 `voice自动读取讲解回复内容` 项目的既有规则执行。需要播报时直接调用那个项目的脚本，不在本项目新增包装器或复制播报逻辑。
 
 ## 5. 验证清单
 
@@ -146,6 +154,22 @@ $outputFile = New-TemporaryFile
 & "tools\CodexVoicePromptBridge\publish-self-contained\CodexVoicePromptBridge.exe" --input-file $inputFile --output-file $outputFile
 [System.IO.File]::ReadAllText($outputFile, [System.Text.Encoding]::UTF8)
 Remove-Item -LiteralPath $inputFile, $outputFile -Force
+```
+
+验证整理器版本和结构决策调试入口：
+
+```powershell
+& "tools\CodexVoicePromptBridge\publish-self-contained\CodexVoicePromptBridge.exe" --version
+$inputFile = New-TemporaryFile
+[System.IO.File]::WriteAllText($inputFile, "请按步骤处理，首先读取 AGENTS.md，其次运行剪贴板测试，最后给我结论。", [System.Text.UTF8Encoding]::new($false))
+& "tools\CodexVoicePromptBridge\publish-self-contained\CodexVoicePromptBridge.exe" --input-file $inputFile --debug-decision
+Remove-Item -LiteralPath $inputFile -Force
+```
+
+验证 v0.2.0 golden case：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File ".\tests\Run-VoiceBridgeGoldenCases.ps1" -BridgeExe ".\tools\CodexVoicePromptBridge\publish-self-contained\CodexVoicePromptBridge.exe"
 ```
 
 验证剪贴板模式：
@@ -270,10 +294,12 @@ Invoke-WebRequest -Uri "http://127.0.0.1:8793/api/apply-final-text" -Method POST
 优先级建议：
 
 1. 先稳定 Codex 本地语音历史 + 网页“自动应用到输入框”链路。
-2. 用真实口述样本补充 `CodexVoicePromptBridge` 的规则。
-3. 做安装期分层话题校准：轻松生活、日常规划、工作任务和高负荷思考分别采样，避免把用户的语言习惯压成一种统一规则。
-4. 做持续学习闭环：只在语音审核页保存时记录“原始识别/自动整理/最终文本”差异，并每日生成候选个人化规则。
-5. 评估是否需要快捷方式、PowerToys 或 AutoHotkey 来绑定全局热键。
-6. 如果规则整理不够聪明，再接入可开关的 LLM 重写层。
-7. 如果未来出现明显优于 Codex 自带识别、且免费低延迟的开源 ASR，再重新评估 TypeWhisper/本地 ASR 技术路线。
-8. 如果 Codex 后续提供语音识别结果 API 或插件钩子，再从剪贴板/按键模拟升级为事件驱动。
+2. v0.2.0 的阶段 0、阶段 1 和最小回填状态闭环已落地；后续规则修改先补 golden case，再改 `CodexVoicePromptBridge`。
+3. 用真实口述样本补充 `CodexVoicePromptBridge` 的规则，尤其是块级口头禅、近音技术词和“不该分条”的长句。
+4. 继续做 v0.2.0 后续阶段：块级口头禅清理、回填状态与失败降级强化、显式整理模式。
+5. 做安装期分层话题校准：轻松生活、日常规划、工作任务和高负荷思考分别采样，避免把用户的语言习惯压成一种统一规则。
+6. 做持续学习闭环：只在语音审核页保存时记录“原始识别/自动整理/最终文本”差异，并每日生成候选个人化规则。
+7. 评估是否需要快捷方式、PowerToys 或 AutoHotkey 来绑定全局热键。
+8. 如果规则整理不够聪明，再接入可开关的 LLM 重写层。
+9. 如果未来出现明显优于 Codex 自带识别、且免费低延迟的开源 ASR，再重新评估 TypeWhisper/本地 ASR 技术路线。
+9. 如果 Codex 后续提供语音识别结果 API 或插件钩子，再从剪贴板/按键模拟升级为事件驱动。

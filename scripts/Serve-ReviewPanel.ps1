@@ -1369,7 +1369,17 @@ function Apply-FinalText {
         return [pscustomobject]@{
             copied = $false
             pasteScheduled = $false
+            pastedImmediately = $false
+            pasteSkippedReason = 'empty_text'
+            pasteMode = ''
             reason = 'empty_text'
+            replaceExisting = $ReplaceExisting
+            pasteDelaySeconds = $PasteDelaySeconds
+            pasteTarget = $null
+            codexComposerFocusAttempted = $false
+            pasteResult = $null
+            length = 0
+            source = 'codex_voice_final_text'
         }
     }
 

@@ -44,5 +44,9 @@ jobs:
       - name: Build bridge
         run: dotnet build ".\tools\CodexVoicePromptBridge\CodexVoicePromptBridge.csproj" -c Release
 
+      - name: Run bridge golden cases
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File ".\tests\Run-VoiceBridgeGoldenCases.ps1"
+
       - name: Build legacy helper
         run: dotnet build ".\tools\TypeWhisperT2S\TypeWhisperT2S.csproj" -c Release

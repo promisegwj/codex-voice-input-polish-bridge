@@ -1,4 +1,4 @@
-﻿# Codex 自带语音识别中介工作流
+# Codex 自带语音识别中介工作流
 
 ## 当前主线
 
@@ -46,6 +46,8 @@ Codex 本地语音历史 / 可控上游输入源 -> 本地中介整理 -> 自动
 2. 调用本地 `CodexVoicePromptBridge.exe` 做繁转简、口头禅清理、常见表达修正、常见英文术语音译纠正、要点总结、上下文压缩和提示词化；网页“整理文本规则”会通过 `--rewrite-rule` 传入整理器，未传入时使用同一条默认规则。
 3. 把整理后的文本写回剪贴板。
 4. 在 `-PasteFinal` 或 `ActiveInput` 模式下先把结果写入剪贴板，再依赖当前有焦点的输入框执行前台粘贴；网页校准中心提供“自动应用到输入框”和“确认回填”。自动应用模式会轮询 Codex 语音历史，发现新转写后直接整理并尝试回填；确认回填用于把发送给 Codex 的最终文本写入剪贴板，并在聚焦 Codex 输入框后先全选原内容再粘贴这段最终文本。
+
+2026-05-27 v0.2.0 MVP 已落地：整理器支持 `--version` 和 `--debug-decision`，结构决策会输出 `mode`、`shouldList`、`confidence`、`reasons`、`protectedSpanCount`、`protectedSpans`。默认分条改为保守策略，只在明确枚举、明确步骤请求或高置信多任务信号下分条；数字、路径、版本号、否定、条件、疑问、不确定性、优先级、专有名词和近音技术词会作为保护跨度参与决策与输出校验。
 
 ## 推荐使用方式
 
@@ -205,6 +207,21 @@ Set-Clipboard -Value "我希望你就是帮我看一下这个项目，然后另�
 powershell -STA -NoProfile -ExecutionPolicy Bypass -File ".\scripts\Invoke-CodexVoiceBridge.ps1" -Mode Clipboard -NoPaste -Print
 ```
 
+验证 v0.2.0 golden case：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File ".\tests\Run-VoiceBridgeGoldenCases.ps1" -BridgeExe ".\tools\CodexVoicePromptBridge\publish-self-contained\CodexVoicePromptBridge.exe"
+```
+
+验证结构决策调试入口：
+
+```powershell
+$inputFile = New-TemporaryFile
+[System.IO.File]::WriteAllText($inputFile, "请按步骤处理，首先读取 AGENTS.md，其次运行剪贴板测试，最后给我结论。", [System.Text.UTF8Encoding]::new($false))
+& ".\tools\CodexVoicePromptBridge\publish-self-contained\CodexVoicePromptBridge.exe" --input-file $inputFile --debug-decision
+Remove-Item -LiteralPath $inputFile -Force
+```
+
 验证“上游剪贴板文本 -> 整理 -> 准备粘贴”路径：
 
 ```powershell
@@ -229,8 +246,10 @@ powershell -STA -NoProfile -ExecutionPolicy Bypass -File ".\scripts\Invoke-Codex
 优先级建议：
 
 1. 优先稳定 Codex 本地语音历史读取和网页“自动应用到输入框”，让原始转写从 `.codex\transcription-history.jsonl` 进入整理链路，并尽快回填到 Codex composer。
-2. 收集 10 到 20 条真实口述文本，补充规则整理里的常见口头表达和识别误差。
-3. 增加安装期分层话题校准流程：先给轻松宽泛的话题采集低思考负担下的表达，再进入日常规划、任务表达和高思考负荷话题，分别生成不同场景下的个人化词表、口头禅和替换规则；设计草案见 `docs/onboarding-calibration.md`。
-4. 如果仍觉得“提示词化”不够聪明，再评估接入免费或低成本 LLM API。
-5. 如果未来出现明显优于当前 Codex 自带语音识别、且免费低延迟的开源 ASR，再重新评估 TypeWhisper/本地 ASR 插件路线。
-6. 如果 Codex 后续提供语音窗口插件/API，再把剪贴板/按键中介改成事件驱动中介。
+2. v0.2.0 的阶段 0、阶段 1 和最小回填状态闭环已落地；后续整理规则变更先补 golden case，再改规则。
+3. 收集 10 到 20 条真实口述文本，补充规则整理里的常见口头表达和识别误差。
+4. 继续推进块级口头禅清理、回填状态与失败降级强化、显式整理模式。
+5. 增加安装期分层话题校准流程：先给轻松宽泛的话题采集低思考负担下的表达，再进入日常规划、任务表达和高思考负荷话题，分别生成不同场景下的个人化词表、口头禅和替换规则；设计草案见 `docs/onboarding-calibration.md`。
+6. 如果仍觉得“提示词化”不够聪明，再评估接入免费或低成本 LLM API。
+7. 如果未来出现明显优于当前 Codex 自带语音识别、且免费低延迟的开源 ASR，再重新评估 TypeWhisper/本地 ASR 插件路线。
+8. 如果 Codex 后续提供语音窗口插件/API，再把剪贴板/按键中介改成事件驱动中介。

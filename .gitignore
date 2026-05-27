@@ -3,6 +3,9 @@
 *.log
 *.tmp
 *.jsonl
+!tests/
+!tests/golden/
+!tests/golden/*.jsonl
 
 # Build outputs
 **/bin/
