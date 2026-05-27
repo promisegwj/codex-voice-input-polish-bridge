@@ -1,4 +1,4 @@
-﻿[CmdletBinding()]
+[CmdletBinding()]
 param(
     [string]$TaskName = 'Codex Voice Feedback Daily Iteration',
 
@@ -6,6 +6,11 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+$isWindowsPlatform = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)
+if (-not $isWindowsPlatform) {
+    throw 'Register-VoiceFeedbackDailyTask.ps1 only registers Windows Task Scheduler tasks. macOS LaunchAgent support is intentionally not installed by default in v0.3; add it only after explicit user confirmation.'
+}
 
 $scriptRoot = if ([string]::IsNullOrWhiteSpace($PSScriptRoot)) {
     Split-Path -Parent $MyInvocation.MyCommand.Path

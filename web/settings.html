@@ -535,7 +535,7 @@
       <div class="panel-head">
         <div>
           <h2>配置概览</h2>
-          <p>以下设置分别控制自动应用、学习方式、访问方式和手动校准方式。首次使用时可以先启用自动应用，确认效果后再开启持续学习。</p>
+          <p>以下设置分别控制自动应用、学习方式、访问方式和手动校准方式。首次使用时建议先跑通剪贴板闭环，确认效果后再开启自动应用或持续学习。</p>
         </div>
       </div>
 
@@ -550,7 +550,7 @@
         </div>
         <div class="overview-item">
           <h3>自动应用</h3>
-          <p>读取 Codex 语音历史，自动整理后尝试替换回 Codex 输入框。</p>
+          <p>读取 Codex 语音历史，自动整理后写入剪贴板，并在有权限时尝试回填到 Codex 输入框。</p>
         </div>
         <div class="overview-item">
           <h3>主动校准</h3>
@@ -684,14 +684,24 @@
 
           <div class="primary-flow">
             <h3>自动应用模式</h3>
-            <p>开启后，本页会持续读取新的 Codex 语音历史；发现新语音后自动整理，并尝试直接替换回 Codex 输入框。</p>
+            <p>开启后，本页会持续读取新的 Codex 语音历史；发现新语音后自动整理、写入剪贴板，并在当前平台允许时尝试回填。</p>
             <div class="setting-row">
               <div>
                 <h3>自动应用到输入框</h3>
-                <p>只处理 Codex 语音历史，不读取普通手动输入；如果无法聚焦 Codex 输入框，会保留整理文本到剪贴板。</p>
+                <p>只处理 Codex 语音历史，不读取普通手动输入；如果无法确认回填目标，会保留整理文本到剪贴板。macOS 自动粘贴需要辅助功能/自动化权限，默认关闭。</p>
               </div>
               <label class="switch" aria-label="自动应用到输入框">
                 <input id="autoApplyEnabled" type="checkbox">
+                <span class="slider"></span>
+              </label>
+            </div>
+            <div class="setting-row">
+              <div>
+                <h3>macOS 实验自动粘贴</h3>
+                <p>开启后，macOS 会在确认捕获到 Codex 时使用 AppleScript 尝试激活 Codex 并按 Cmd+V。需要系统“辅助功能/自动化”权限；失败时只保留剪贴板。</p>
+              </div>
+              <label class="switch" aria-label="macOS 实验自动粘贴">
+                <input id="macOsBestEffortPasteEnabled" type="checkbox">
                 <span class="slider"></span>
               </label>
             </div>
@@ -757,7 +767,7 @@
 
         <div class="notice return-panel">
           <h3>完成当前校准</h3>
-          <p>确认回填会把“发送给 Codex 的最终文本”写入剪贴板，并尝试回填到 Codex 输入框。保存样本也会把这段文本当作标准答案。若你回填后又在 Codex 输入框里手动修改，网页无法自动知道发送按钮按下瞬间的文本，请回到这里同步后再保存样本。</p>
+          <p>确认回填会把“发送给 Codex 的最终文本”写入剪贴板，并在可确认目标时尝试回填到 Codex 输入框。保存样本也会把这段文本当作标准答案。若你回填后又在 Codex 输入框里手动修改，网页无法自动知道发送按钮按下瞬间的文本，请回到这里同步后再保存样本。</p>
           <div class="setting-row">
             <div>
               <h3>发送后旁路确认</h3>
@@ -829,7 +839,7 @@
                 <div id="returnValidationDelay" class="validation-value">0 秒</div>
               </div>
             </div>
-            <p id="returnValidationNote" class="validation-note">回填后这里会显示服务返回的校验结果；网页无法监听 Codex 的发送按钮，最终是否发送成功仍以 Codex 输入框和对话实际内容为准。</p>
+            <p id="returnValidationNote" class="validation-note">回填后这里会显示服务返回的校验结果；如果只复制到剪贴板，请切回 Codex 按 Ctrl+V 或 Cmd+V。网页无法监听 Codex 的发送按钮，最终是否发送成功仍以 Codex 输入框和对话实际内容为准。</p>
           </div>
         </div>
       </div>
@@ -852,6 +862,7 @@
     const autoStartWithCodex = document.getElementById("autoStartWithCodex");
     const autoApplyEnabled = document.getElementById("autoApplyEnabled");
     const autoApplyPollMilliseconds = document.getElementById("autoApplyPollMilliseconds");
+    const macOsBestEffortPasteEnabled = document.getElementById("macOsBestEffortPasteEnabled");
     const autoApplyState = document.getElementById("autoApplyState");
     const sentTextMonitorEnabled = document.getElementById("sentTextMonitorEnabled");
     const sentTextMonitorDurationSeconds = document.getElementById("sentTextMonitorDurationSeconds");
@@ -971,12 +982,12 @@
       const state = !copied
         ? "处理失败"
         : result.pastedImmediately
-          ? "已回填到 Codex 输入框，可以发送"
+          ? "已回填：请确认 Codex 输入框内容后发送"
           : result.pasteScheduled
             ? "已安排回填，等待确认"
             : skippedReason
-              ? "未回填，已复制到剪贴板"
-              : "已复制到剪贴板";
+              ? "已跳过回填：请勿直接发送原始文本"
+              : "已复制到剪贴板：请切回 Codex 后粘贴";
 
       returnValidationState.textContent = state;
       returnValidationMode.textContent = pasteModeLabel(result);
@@ -988,7 +999,7 @@
         noteParts.push("发送给 Codex 的最终文本已写入剪贴板。");
       }
       if (result?.pastedImmediately) {
-        noteParts.push("本次走零延迟路径，服务已确认聚焦并发送粘贴按键。");
+        noteParts.push("本次已发送粘贴按键；请确认 Codex 输入框内容正确后再发送。");
       }
       else if (result?.pasteScheduled) {
         noteParts.push("本次已交给后台回填流程；请先确认 Codex 输入框内容，再发送。");
@@ -997,7 +1008,7 @@
         noteParts.push("目标为 Codex 时已尝试聚焦底部输入框。");
       }
       if (skippedReason) {
-        noteParts.push(`跳过粘贴原因：${skippedReason}。`);
+        noteParts.push(`已跳过回填：${skippedReason}。请切回 Codex 按 Ctrl+V 或 Cmd+V，不要直接发送原始识别文本。`);
       }
       noteParts.push("网页无法监听 Codex 的发送按钮；如果回填后又在 Codex 输入框里修改，请回到这里同步最终文本。");
       returnValidationNote.textContent = noteParts.join("");
@@ -1186,6 +1197,7 @@
       pasteDelaySeconds.value = clampPasteDelaySeconds(activeCalibration.pasteDelaySeconds ?? 0);
       autoApplyEnabled.checked = Boolean(activeCalibration.autoApplyEnabled);
       autoApplyPollMilliseconds.value = clampPollMilliseconds(activeCalibration.autoApplyPollMilliseconds || 500);
+      macOsBestEffortPasteEnabled.checked = Boolean(activeCalibration.macOsBestEffortPasteEnabled);
       sentTextMonitorEnabled.checked = activeCalibration.sentTextMonitorEnabled !== false;
       sentTextMonitorDurationSeconds.value = clampSentMonitorDurationSeconds(activeCalibration.sentTextMonitorDurationSeconds || 60);
       sentTextMonitorPollSeconds.value = clampSentMonitorPollSeconds(activeCalibration.sentTextMonitorPollSeconds || 3);
@@ -1234,6 +1246,7 @@
           pasteDelaySeconds: clampPasteDelaySeconds(pasteDelaySeconds.value),
           autoApplyEnabled: autoApplyEnabled.checked,
           autoApplyPollMilliseconds: clampPollMilliseconds(autoApplyPollMilliseconds.value),
+          macOsBestEffortPasteEnabled: macOsBestEffortPasteEnabled.checked,
           sentTextMonitorEnabled: sentTextMonitorEnabled.checked,
           sentTextMonitorDurationSeconds: clampSentMonitorDurationSeconds(sentTextMonitorDurationSeconds.value),
           sentTextMonitorPollSeconds: clampSentMonitorPollSeconds(sentTextMonitorPollSeconds.value),
@@ -1414,18 +1427,18 @@
         : "未捕获到明确窗口时，本次只写入剪贴板，不发送粘贴按键。";
       const delayText = delaySeconds > 0 ? `${delaySeconds} 秒后` : "马上";
       const returnStatus = result.pastedImmediately
-        ? "已回填，可以发送"
+        ? "已回填，请确认后发送"
         : result.pasteScheduled
           ? "已安排回填"
           : result.pasteSkippedReason
-            ? "未回填，已复制"
+            ? "已跳过回填"
             : "已复制到剪贴板";
       const returnAction = result.pastedImmediately
-        ? "已确认聚焦目标并发送全选粘贴按键。"
+        ? "已发送全选粘贴按键；请确认 Codex 输入框内容正确后再发送。"
         : result.pasteScheduled
           ? `${delayText}会先全选原内容，再粘贴最终文本；请确认 Codex 输入框内容后再发送。`
-          : "没有安排粘贴，请手动粘贴剪贴板中的最终文本。";
-      const skipText = result.pasteSkippedReason ? `本次没有发送粘贴按键：${result.pasteSkippedReason}。` : "";
+          : "没有安排粘贴，请切回 Codex 按 Ctrl+V 或 Cmd+V 粘贴剪贴板中的最终文本。";
+      const skipText = result.pasteSkippedReason ? `已跳过回填：${result.pasteSkippedReason}。请勿直接发送原始识别文本。` : "";
       const returnClass = result.pastedImmediately ? "saved" : "warn";
       setStatus(returnStatus, returnClass);
       activeFinal.dataset.returnedText = finalText;
@@ -1600,8 +1613,8 @@
 
       const pollMilliseconds = clampPollMilliseconds(autoApplyPollMilliseconds.value);
       autoApplyPollMilliseconds.value = pollMilliseconds;
-      setSendGuard("danger", "自动应用保护中", "语音结束后先别点 Codex 发送。等这里显示“可以发送”后，再发送当前输入。");
-      setAutoApplyState(`自动应用已开启；每 ${pollMilliseconds} 毫秒检查新的 Codex 语音历史。语音结束后请等回填完成再发送。`, "warn");
+      setSendGuard("danger", "自动应用保护中", "语音结束后先别点 Codex 发送。等这里显示已回填，或按提示手动粘贴剪贴板后，再发送当前输入。");
+      setAutoApplyState(`自动应用已开启；每 ${pollMilliseconds} 毫秒检查新的 Codex 语音历史。它只读取语音历史，不监听键盘鼠标，也不读取普通手打输入。`, "warn");
       autoApplyTimer = window.setInterval(() => {
         pollAutoApplyHistory();
       }, pollMilliseconds);
@@ -1637,7 +1650,7 @@
         });
 
         if (!result.found) {
-          setSendGuard("danger", "自动应用保护中", "语音结束后先别点 Codex 发送。等自动整理回填完成，再发送当前输入。");
+          setSendGuard("danger", "自动应用保护中", "语音结束后先别点 Codex 发送。等自动整理完成，或按提示手动粘贴剪贴板后，再发送当前输入。");
           setAutoApplyState("自动应用已开启，正在等待新的 Codex 语音历史。语音结束后不要立刻发送。", "warn");
           return;
         }
@@ -1665,14 +1678,14 @@
 
         const applyResult = result.applyResult || {};
         if (applyResult.pastedImmediately) {
-          setStatus("已回填，可以发送", "saved");
-          setSendGuard("ready", "可以发送", "已自动整理并回填到 Codex 输入框。请确认输入框内容正确后再发送。");
-          setAutoApplyState("已检测到新语音，完成自动整理并回填到 Codex 输入框。现在可以确认后发送。", "saved");
+          setStatus("已回填，请确认后发送", "saved");
+          setSendGuard("ready", "已回填", "已自动整理并回填到 Codex 输入框。请确认输入框内容正确后再发送。");
+          setAutoApplyState("已检测到新语音，完成自动整理并回填到 Codex 输入框。请确认内容正确后发送。", "saved");
         }
         else if (applyResult.pasteSkippedReason) {
-          setStatus("未回填，已复制", "warn");
-          setSendGuard("danger", "请先不要发送", "整理文本已写入剪贴板，但没有成功回填。请手动粘贴或确认输入框内容后再发送。");
-          setAutoApplyState(`未回填，已复制到剪贴板。已跳过自动粘贴：${applyResult.pasteSkippedReason}`, "warn");
+          setStatus("已跳过回填", "warn");
+          setSendGuard("danger", "请先不要发送", "整理文本已写入剪贴板，但没有成功回填。请切回 Codex 按 Ctrl+V 或 Cmd+V 后再发送。");
+          setAutoApplyState(`已复制到剪贴板。已跳过回填：${applyResult.pasteSkippedReason}。请勿直接发送原始识别文本。`, "warn");
         }
         else if (applyResult.pasteScheduled) {
           setStatus("已安排回填", "warn");
@@ -1681,8 +1694,8 @@
         }
         else {
           setStatus("已复制到剪贴板", "warn");
-          setSendGuard("danger", "请先不要发送", "整理文本已写入剪贴板，但没有确认进入 Codex 输入框。请手动粘贴或确认输入框内容后再发送。");
-          setAutoApplyState("已检测到新语音，整理文本已写入剪贴板。未确认进入 Codex 输入框，请手动确认后再发送。", "warn");
+          setSendGuard("danger", "请先不要发送", "整理文本已写入剪贴板，但没有确认进入 Codex 输入框。请切回 Codex 按 Ctrl+V 或 Cmd+V 后再发送。");
+          setAutoApplyState("已检测到新语音，整理文本已写入剪贴板。请手动粘贴并确认内容后再发送。", "warn");
         }
 
         if (applyResult.pastedImmediately || applyResult.pasteScheduled) {
@@ -1929,6 +1942,17 @@
       saveSettings().catch(() => {
         setStatus("保存失败", "warn");
         setAutoApplyState("自动应用检查间隔保存失败。", "warn");
+      });
+    });
+
+    macOsBestEffortPasteEnabled.addEventListener("change", () => {
+      saveSettings().then(() => {
+        if (macOsBestEffortPasteEnabled.checked) {
+          setAutoApplyState("已开启 macOS 实验自动粘贴。请先在系统设置里为当前运行宿主授予辅助功能/自动化权限；失败时仍会只保留剪贴板。", "warn");
+        }
+      }).catch(() => {
+        setStatus("保存失败", "warn");
+        setAutoApplyState("macOS 实验自动粘贴设置保存失败。", "warn");
       });
     });
 

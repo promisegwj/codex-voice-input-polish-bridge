@@ -26,14 +26,13 @@ if ([string]::IsNullOrWhiteSpace($CasePath)) {
 $casePathResolved = (Resolve-Path -LiteralPath $CasePath).Path
 $bridgeProject = Join-Path $projectRoot 'tools\CodexVoicePromptBridge\CodexVoicePromptBridge.csproj'
 if ([string]::IsNullOrWhiteSpace($BridgeExe)) {
-    $releaseExe = Join-Path $projectRoot 'tools\CodexVoicePromptBridge\bin\Release\net10.0\CodexVoicePromptBridge.exe'
-    $publishedExe = Join-Path $projectRoot 'tools\CodexVoicePromptBridge\publish-self-contained\CodexVoicePromptBridge.exe'
-    if (Test-Path -LiteralPath $releaseExe) {
-        $BridgeExe = $releaseExe
-    }
-    elseif (Test-Path -LiteralPath $publishedExe) {
-        $BridgeExe = $publishedExe
-    }
+    $bridgeCandidates = @(
+        (Join-Path $projectRoot 'tools\CodexVoicePromptBridge\bin\Release\net10.0\CodexVoicePromptBridge.exe'),
+        (Join-Path $projectRoot 'tools\CodexVoicePromptBridge\bin\Release\net10.0\CodexVoicePromptBridge'),
+        (Join-Path $projectRoot 'tools\CodexVoicePromptBridge\publish-self-contained\CodexVoicePromptBridge.exe'),
+        (Join-Path $projectRoot 'tools\CodexVoicePromptBridge\publish-self-contained\CodexVoicePromptBridge')
+    )
+    $BridgeExe = ($bridgeCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1)
 }
 
 function Invoke-Bridge {

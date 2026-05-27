@@ -24,6 +24,21 @@ else {
     $PSScriptRoot
 }
 
+$script:IsWindowsPlatform = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)
+$script:IsMacOSPlatform = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::OSX)
+
+function Get-UserHomePath {
+    if (-not [string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
+        return $env:USERPROFILE
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($env:HOME)) {
+        return $env:HOME
+    }
+
+    return [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)
+}
+
 if ([string]::IsNullOrWhiteSpace($WebRoot)) {
     $WebRoot = Join-Path $scriptRoot '..\web'
 }
@@ -36,11 +51,11 @@ if ([string]::IsNullOrWhiteSpace($SettingsPath)) {
 }
 
 if ([string]::IsNullOrWhiteSpace($TranscriptionHistoryPath)) {
-    $TranscriptionHistoryPath = Join-Path $env:USERPROFILE '.codex\transcription-history.jsonl'
+    $TranscriptionHistoryPath = Join-Path (Get-UserHomePath) '.codex/transcription-history.jsonl'
 }
 
 if ([string]::IsNullOrWhiteSpace($CodexSessionsRoot)) {
-    $CodexSessionsRoot = Join-Path $env:USERPROFILE '.codex\sessions'
+    $CodexSessionsRoot = Join-Path (Get-UserHomePath) '.codex/sessions'
 }
 
 $listener = [System.Net.HttpListener]::new()
@@ -51,6 +66,10 @@ $listener.Start()
 $script:LastPasteTarget = $null
 
 function Ensure-FocusNativeMethods {
+    if (-not $script:IsWindowsPlatform) {
+        throw 'Windows focus native methods are only available on Windows.'
+    }
+
     if ('CodexVoiceFocus.NativeMethods' -as [type]) {
         return
     }
@@ -86,6 +105,10 @@ namespace CodexVoiceFocus
 function Get-WindowTitle {
     param([Parameter(Mandatory = $true)][IntPtr]$Hwnd)
 
+    if (-not $script:IsWindowsPlatform) {
+        return ''
+    }
+
     Ensure-FocusNativeMethods
     $length = [CodexVoiceFocus.NativeMethods]::GetWindowTextLengthW($Hwnd)
     if ($length -le 0) {
@@ -103,6 +126,39 @@ function Get-WindowTitle {
 
 function Capture-PasteTarget {
     param([string]$Reason = 'manual')
+
+    if ($script:IsMacOSPlatform) {
+        $frontApp = ''
+        $frontTitle = ''
+        $osascript = Get-Command osascript -ErrorAction SilentlyContinue
+        if ($null -ne $osascript) {
+            try {
+                $frontApp = (& $osascript.Source -e 'tell application "System Events" to get name of first application process whose frontmost is true' 2>$null | Out-String).Trim()
+                $frontTitle = (& $osascript.Source -e 'tell application "System Events" to get name of front window of first application process whose frontmost is true' 2>$null | Out-String).Trim()
+            }
+            catch {
+                $frontApp = ''
+                $frontTitle = ''
+            }
+        }
+
+        $target = [pscustomobject]@{
+            hwnd = 0
+            processId = 0
+            processName = $frontApp
+            title = $frontTitle
+            platform = 'macos'
+            capturedAt = (Get-Date).ToString('o')
+            reason = $Reason
+        }
+
+        $script:LastPasteTarget = $target
+        return $target
+    }
+
+    if (-not $script:IsWindowsPlatform) {
+        return $null
+    }
 
     Ensure-FocusNativeMethods
     $hwnd = [CodexVoiceFocus.NativeMethods]::GetForegroundWindow()
@@ -128,6 +184,7 @@ function Capture-PasteTarget {
         processId = [int64]$processId
         processName = $processName
         title = Get-WindowTitle -Hwnd $hwnd
+        platform = 'windows'
         capturedAt = (Get-Date).ToString('o')
         reason = $Reason
     }
@@ -146,6 +203,7 @@ function Get-PasteTargetSnapshot {
         processId = $script:LastPasteTarget.processId
         processName = $script:LastPasteTarget.processName
         title = $script:LastPasteTarget.title
+        platform = if ($script:LastPasteTarget.PSObject.Properties.Item('platform')) { [string]$script:LastPasteTarget.platform } else { if ($script:IsMacOSPlatform) { 'macos' } elseif ($script:IsWindowsPlatform) { 'windows' } else { 'unknown' } }
         capturedAt = $script:LastPasteTarget.capturedAt
         reason = $script:LastPasteTarget.reason
     }
@@ -229,10 +287,11 @@ function Get-DefaultSettings {
             pasteDelaySeconds = 0
             autoApplyEnabled = $false
             autoApplyPollMilliseconds = 500
-            sentTextMonitorEnabled = $true
+            sentTextMonitorEnabled = $false
             sentTextMonitorDurationSeconds = 60
             sentTextMonitorPollSeconds = 3
             sentTextMonitorMinScore = 70
+            macOsBestEffortPasteEnabled = $false
             defaultRewriteRule = '先判断原始口述的真实意图和任务边界；保留事实、否定、时间、数字、路径、文件名、专有名词和条件，不新增原文没有的信息。删除不承载意义的口头禅、重复句、犹豫词和自我打断；对“不是 A，是 B”“不对，改成 B”以后者为准。将“你能不能/是不是可以”改为直接可执行请求，但真正的可行性询问要保留为问题。多件事按 1、2、3 拆分，每项写成“动作 + 对象 + 验证/交付要求”。长句按意图断句，使用规范中文标点；保留必要的语气和不确定性，关键歧义标为“需确认”。输出应简洁、清楚、可执行，适合直接发给 Codex；不要额外添加固定标题。'
         }
     }
@@ -307,6 +366,10 @@ function Read-Settings {
 
         if (-not $settings.activeCalibration.PSObject.Properties.Item('sentTextMonitorMinScore')) {
             $settings.activeCalibration | Add-Member -MemberType NoteProperty -Name sentTextMonitorMinScore -Value $defaults.activeCalibration.sentTextMonitorMinScore
+        }
+
+        if (-not $settings.activeCalibration.PSObject.Properties.Item('macOsBestEffortPasteEnabled')) {
+            $settings.activeCalibration | Add-Member -MemberType NoteProperty -Name macOsBestEffortPasteEnabled -Value $defaults.activeCalibration.macOsBestEffortPasteEnabled
         }
 
         return $settings
@@ -494,6 +557,10 @@ function Merge-Settings {
             }
 
             $activeCalibration.sentTextMonitorMinScore = $minScore
+        }
+
+        if ($null -ne $Incoming.activeCalibration.macOsBestEffortPasteEnabled) {
+            $activeCalibration.macOsBestEffortPasteEnabled = [bool]$Incoming.activeCalibration.macOsBestEffortPasteEnabled
         }
     }
 
@@ -902,10 +969,14 @@ function Invoke-TextBridge {
         [string]$RewriteRule = ''
     )
 
-    $bridgeExe = Join-Path $projectRoot 'tools\CodexVoicePromptBridge\publish-self-contained\CodexVoicePromptBridge.exe'
-    if (-not (Test-Path -LiteralPath $bridgeExe)) {
-        throw "Bridge executable was not found: $bridgeExe"
-    }
+    $bridgeCandidates = @(
+        (Join-Path $projectRoot 'tools\CodexVoicePromptBridge\publish-self-contained\CodexVoicePromptBridge.exe'),
+        (Join-Path $projectRoot 'tools\CodexVoicePromptBridge\publish-self-contained\CodexVoicePromptBridge'),
+        (Join-Path $projectRoot 'tools\CodexVoicePromptBridge\bin\Release\net10.0\CodexVoicePromptBridge.exe'),
+        (Join-Path $projectRoot 'tools\CodexVoicePromptBridge\bin\Release\net10.0\CodexVoicePromptBridge')
+    )
+    $bridgeExe = ($bridgeCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1)
+    $bridgeProject = Join-Path $projectRoot 'tools\CodexVoicePromptBridge\CodexVoicePromptBridge.csproj'
 
     $inputFile = [System.IO.Path]::GetTempFileName()
     $outputFile = [System.IO.Path]::GetTempFileName()
@@ -917,7 +988,18 @@ function Invoke-TextBridge {
             $bridgeArgs += @('--rewrite-rule', $RewriteRule)
         }
 
-        & $bridgeExe @bridgeArgs
+        if (-not [string]::IsNullOrWhiteSpace($bridgeExe)) {
+            & $bridgeExe @bridgeArgs
+        }
+        else {
+            $dotnetCommand = Get-Command dotnet -ErrorAction SilentlyContinue
+            if ($null -eq $dotnetCommand) {
+                throw "Bridge executable was not found and dotnet was not found on PATH. Checked: $($bridgeCandidates -join ', ')"
+            }
+
+            $dotnetArgs = @('run', '--project', $bridgeProject, '-c', 'Release', '--no-launch-profile', '--') + $bridgeArgs
+            & $dotnetCommand.Source @dotnetArgs
+        }
 
         if ($LASTEXITCODE -ne 0) {
             throw "Bridge executable failed with exit code $LASTEXITCODE."
@@ -1022,6 +1104,19 @@ function Invoke-VoiceHotkey {
             dryRun = $true
             hotkey = $hotkey
             label = [string]$settings.activeCalibration.voiceHotkeyLabel
+            platform = if ($script:IsMacOSPlatform) { 'macos' } elseif ($script:IsWindowsPlatform) { 'windows' } else { 'unknown' }
+        }
+    }
+
+    if (-not $script:IsWindowsPlatform) {
+        return [pscustomobject]@{
+            sent = $false
+            dryRun = $false
+            hotkey = $hotkey
+            label = [string]$settings.activeCalibration.voiceHotkeyLabel
+            platform = if ($script:IsMacOSPlatform) { 'macos' } else { 'unknown' }
+            reason = 'voice_hotkey_not_supported_on_this_platform'
+            message = 'macOS v0.3 does not send a global voice hotkey. Use Codex voice input, then import the latest transcription or use clipboard import.'
         }
     }
 
@@ -1046,6 +1141,20 @@ function Invoke-VoiceHotkey {
 }
 
 function Read-ClipboardText {
+    if (-not $script:IsWindowsPlatform) {
+        $pbpaste = Get-Command pbpaste -ErrorAction SilentlyContinue
+        if ($null -eq $pbpaste) {
+            throw 'pbpaste was not found. Clipboard import is unavailable on this platform.'
+        }
+
+        $output = & $pbpaste.Source 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            throw 'pbpaste failed to read the macOS clipboard.'
+        }
+
+        return ($output | Out-String).TrimEnd("`r", "`n")
+    }
+
     $tempFile = [System.IO.Path]::GetTempFileName()
     $escapedTempFile = $tempFile.Replace("'", "''")
     $command = @(
@@ -1075,6 +1184,20 @@ function Read-ClipboardText {
 
 function Write-ClipboardText {
     param([Parameter(Mandatory = $true)][string]$Text)
+
+    if (-not $script:IsWindowsPlatform) {
+        $pbcopy = Get-Command pbcopy -ErrorAction SilentlyContinue
+        if ($null -eq $pbcopy) {
+            throw 'pbcopy was not found. Clipboard write is unavailable on this platform.'
+        }
+
+        $Text | & $pbcopy.Source
+        if ($LASTEXITCODE -ne 0) {
+            throw 'pbcopy failed to write the macOS clipboard.'
+        }
+
+        return
+    }
 
     if ([Threading.Thread]::CurrentThread.GetApartmentState() -eq 'STA') {
         Add-Type -AssemblyName System.Windows.Forms
@@ -1137,12 +1260,31 @@ function Get-PasteTargetInfo {
         hwnd = $targetHwnd
         processName = $targetProcessName
         title = $targetTitle
-        requiresCodexComposerFocus = ($targetProcessName -ieq 'Codex' -or $targetTitle -eq 'Codex')
+        platform = if ($null -ne $Target -and $Target.PSObject.Properties.Item('platform')) { [string]$Target.platform } else { if ($script:IsMacOSPlatform) { 'macos' } elseif ($script:IsWindowsPlatform) { 'windows' } else { 'unknown' } }
+        requiresCodexComposerFocus = ($targetProcessName -ieq 'Codex' -or $targetTitle -eq 'Codex' -or $targetTitle -match 'Codex')
     }
 }
 
 function Focus-PasteTarget {
     param([Parameter(Mandatory = $true)]$Info)
+
+    if ($script:IsMacOSPlatform) {
+        if (-not ([string]$Info.processName -ieq 'Codex' -or [string]$Info.title -match 'Codex')) {
+            return [pscustomobject]@{
+                focused = $false
+                skippedReason = 'macos_codex_target_not_captured'
+                codexComposerFocusAttempted = $false
+                platform = 'macos'
+            }
+        }
+
+        return [pscustomobject]@{
+            focused = $false
+            skippedReason = 'macos_composer_focus_unconfirmed'
+            codexComposerFocusAttempted = $true
+            platform = 'macos'
+        }
+    }
 
     if ([int64]$Info.hwnd -le 0) {
         return [pscustomobject]@{
@@ -1211,6 +1353,21 @@ function Focus-PasteTarget {
 function Send-PasteKeys {
     param([bool]$ReplaceExisting = $false)
 
+    if ($script:IsMacOSPlatform) {
+        $osascript = Get-Command osascript -ErrorAction SilentlyContinue
+        if ($null -eq $osascript) {
+            throw 'osascript was not found. Paste the copied text manually with Cmd+V.'
+        }
+
+        if ($ReplaceExisting) {
+            & $osascript.Source -e 'tell application "Codex" to activate' -e 'tell application "System Events" to keystroke "a" using command down' -e 'delay 0.06' -e 'tell application "System Events" to keystroke "v" using command down' | Out-Null
+            return
+        }
+
+        & $osascript.Source -e 'tell application "Codex" to activate' -e 'tell application "System Events" to keystroke "v" using command down' | Out-Null
+        return
+    }
+
     Add-Type -AssemblyName System.Windows.Forms
     if ($ReplaceExisting) {
         [System.Windows.Forms.SendKeys]::SendWait('^a')
@@ -1238,6 +1395,90 @@ function Start-DelayedPaste {
 
     $delayMs = $DelaySeconds * 1000
     $targetInfo = Get-PasteTargetInfo -Target $Target
+
+    if ($script:IsMacOSPlatform) {
+        $settings = Read-Settings
+        if (-not [bool]$settings.activeCalibration.macOsBestEffortPasteEnabled) {
+            return [pscustomobject]@{
+                started = $false
+                pastedImmediately = $false
+                mode = 'macos_best_effort_disabled'
+                skippedReason = 'macos_best_effort_paste_disabled'
+                focusResult = [pscustomobject]@{
+                    focused = $false
+                    skippedReason = 'macos_best_effort_paste_disabled'
+                    codexComposerFocusAttempted = $false
+                    platform = 'macos'
+                }
+            }
+        }
+
+        if (-not ([string]$targetInfo.processName -ieq 'Codex' -or [string]$targetInfo.title -match 'Codex')) {
+            return [pscustomobject]@{
+                started = $false
+                pastedImmediately = $false
+                mode = 'macos_applescript_best_effort'
+                skippedReason = 'macos_codex_target_not_captured'
+                focusResult = [pscustomobject]@{
+                    focused = $false
+                    skippedReason = 'macos_codex_target_not_captured'
+                    codexComposerFocusAttempted = $false
+                    platform = 'macos'
+                }
+            }
+        }
+
+        try {
+            if ($DelaySeconds -gt 0) {
+                Start-Sleep -Seconds $DelaySeconds
+            }
+
+            Send-PasteKeys -ReplaceExisting $ReplaceExisting
+            return [pscustomobject]@{
+                started = $true
+                pastedImmediately = $true
+                mode = 'macos_applescript_best_effort'
+                skippedReason = ''
+                focusResult = [pscustomobject]@{
+                    focused = $true
+                    skippedReason = ''
+                    codexComposerFocusAttempted = $true
+                    platform = 'macos'
+                }
+            }
+        }
+        catch {
+            return [pscustomobject]@{
+                started = $false
+                pastedImmediately = $false
+                mode = 'macos_applescript_best_effort'
+                skippedReason = 'macos_accessibility_or_automation_failed'
+                error = $_.Exception.Message
+                focusResult = [pscustomobject]@{
+                    focused = $false
+                    skippedReason = 'macos_accessibility_or_automation_failed'
+                    codexComposerFocusAttempted = $true
+                    platform = 'macos'
+                }
+            }
+        }
+    }
+
+    if (-not $script:IsWindowsPlatform) {
+        return [pscustomobject]@{
+            started = $false
+            pastedImmediately = $false
+            mode = 'unsupported_platform'
+            skippedReason = 'paste_not_supported_on_this_platform'
+            focusResult = [pscustomobject]@{
+                focused = $false
+                skippedReason = 'paste_not_supported_on_this_platform'
+                codexComposerFocusAttempted = $false
+                platform = 'unknown'
+            }
+        }
+    }
+
     $requiresCodexComposerFocusLiteral = if ([bool]$targetInfo.requiresCodexComposerFocus) { '$true' } else { '$false' }
 
     if ($DelaySeconds -eq 0 -and [Threading.Thread]::CurrentThread.GetApartmentState() -eq 'STA') {
@@ -1459,6 +1700,23 @@ function Invoke-VoiceAutoCapture {
     }
     elseif ($DelaySeconds -gt 60) {
         $DelaySeconds = 60
+    }
+
+    if (-not $script:IsWindowsPlatform) {
+        $before = Read-LatestCodexTranscription -MaxAgeSeconds 0
+        $beforeCreatedAtMs = if ($before.found -and $before.createdAtMs) { [int64]$before.createdAtMs } else { 0 }
+        Start-Sleep -Seconds $DelaySeconds
+        $latest = Read-LatestCodexTranscription -AfterCreatedAtMs $beforeCreatedAtMs -MaxAgeSeconds 0
+        $latest | Add-Member -MemberType NoteProperty -Name rejected -Value (-not $latest.found) -Force
+        $latest | Add-Member -MemberType NoteProperty -Name hotkey -Value $hotkey -Force
+        $latest | Add-Member -MemberType NoteProperty -Name label -Value ([string]$settings.activeCalibration.voiceHotkeyLabel) -Force
+        $latest | Add-Member -MemberType NoteProperty -Name delaySeconds -Value $DelaySeconds -Force
+        $latest | Add-Member -MemberType NoteProperty -Name platform -Value (if ($script:IsMacOSPlatform) { 'macos' } else { 'unknown' }) -Force
+        if (-not $latest.found) {
+            $latest | Add-Member -MemberType NoteProperty -Name reason -Value 'macos_voice_hotkey_not_sent_no_new_transcription' -Force
+            $latest | Add-Member -MemberType NoteProperty -Name message -Value 'macOS v0.3 does not send a global voice hotkey. Use Codex voice input, then import the latest transcription or use clipboard import.' -Force
+        }
+        return $latest
     }
 
     $before = Read-LatestCodexTranscription -MaxAgeSeconds 0
@@ -1796,7 +2054,7 @@ try {
 
         if ($requestPath -eq 'api/features') {
             Send-JsonResponse -Response $context.Response -Value ([pscustomobject]@{
-                version = 9
+                version = 10
                 features = @(
                     'latest-codex-transcription',
                     'latest-codex-sent-text',
@@ -1809,8 +2067,29 @@ try {
                     'auto-apply-codex-transcription',
                     'feedback-learning-iteration',
                     'separate-save-and-rule-update',
-                    'feedback-retention-cleanup'
+                    'feedback-retention-cleanup',
+                    'cross-platform-macos-clipboard',
+                    'platform-capabilities'
                 )
+            })
+            continue
+        }
+
+        if ($requestPath -eq 'api/platform') {
+            if ($context.Request.HttpMethod -ne 'GET') {
+                Send-JsonResponse -Response $context.Response -Value ([pscustomobject]@{ error = 'method not allowed' }) -StatusCode 405
+                continue
+            }
+
+            Send-JsonResponse -Response $context.Response -Value ([pscustomobject]@{
+                platform = if ($script:IsMacOSPlatform) { 'macos' } elseif ($script:IsWindowsPlatform) { 'windows' } else { 'unknown' }
+                isWindows = $script:IsWindowsPlatform
+                isMacOS = $script:IsMacOSPlatform
+                transcriptionHistoryPath = $TranscriptionHistoryPath
+                codexSessionsRoot = $CodexSessionsRoot
+                clipboardAdapter = if ($script:IsMacOSPlatform) { 'pbcopy-pbpaste' } elseif ($script:IsWindowsPlatform) { 'windows-forms-sta' } else { 'none' }
+                pasteTargetAdapter = if ($script:IsMacOSPlatform) { 'macos-applescript-best-effort-disabled-by-default' } elseif ($script:IsWindowsPlatform) { 'user32-uia-sendkeys' } else { 'none' }
+                macOsBestEffortPasteEnabled = if ($script:IsMacOSPlatform) { [bool](Read-Settings).activeCalibration.macOsBestEffortPasteEnabled } else { $false }
             })
             continue
         }

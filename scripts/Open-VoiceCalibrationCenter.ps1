@@ -1,4 +1,4 @@
-﻿[CmdletBinding()]
+[CmdletBinding()]
 param(
     [int]$Port = 8793,
 
@@ -15,6 +15,8 @@ $scriptRoot = if ([string]::IsNullOrWhiteSpace($PSScriptRoot)) {
 else {
     $PSScriptRoot
 }
+
+$script:IsWindowsPlatform = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)
 
 if ([string]::IsNullOrWhiteSpace($WebRoot)) {
     $WebRoot = Join-Path $scriptRoot '..\web'
@@ -41,9 +43,10 @@ function Test-CalibrationServer {
 
         $features = $featureResponse.Content | ConvertFrom-Json
         return (
-            [int]$features.version -ge 8 -and
+            [int]$features.version -ge 10 -and
             @($features.features) -contains 'generated-profile-polish' -and
-            @($features.features) -contains 'auto-apply-codex-transcription'
+            @($features.features) -contains 'auto-apply-codex-transcription' -and
+            @($features.features) -contains 'platform-capabilities'
         )
     }
     catch {
@@ -52,6 +55,10 @@ function Test-CalibrationServer {
 }
 
 function Stop-StaleCalibrationServers {
+    if (-not $script:IsWindowsPlatform) {
+        return
+    }
+
     $serverScriptName = [System.IO.Path]::GetFileName($serverScript)
     Get-CimInstance Win32_Process |
         Where-Object {
@@ -69,8 +76,26 @@ if (-not (Test-CalibrationServer)) {
 
     $resolvedServerScript = (Resolve-Path -LiteralPath $serverScript).Path
     $resolvedWebRoot = (Resolve-Path -LiteralPath $WebRoot).Path
-    $arguments = "-STA -NoProfile -ExecutionPolicy Bypass -File `"$resolvedServerScript`" -Port $Port -WebRoot `"$resolvedWebRoot`""
-    Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -ArgumentList $arguments | Out-Null
+    if ($script:IsWindowsPlatform) {
+        $arguments = "-STA -NoProfile -ExecutionPolicy Bypass -File `"$resolvedServerScript`" -Port $Port -WebRoot `"$resolvedWebRoot`""
+        Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -ArgumentList $arguments | Out-Null
+    }
+    else {
+        $pwsh = Get-Command pwsh -ErrorAction SilentlyContinue
+        if ($null -eq $pwsh) {
+            throw 'PowerShell 7 (pwsh) is required to start the macOS calibration center.'
+        }
+
+        Start-Process `
+            -FilePath $pwsh.Source `
+            -ArgumentList @(
+                '-NoProfile',
+                '-ExecutionPolicy', 'Bypass',
+                '-File', $resolvedServerScript,
+                '-Port', $Port,
+                '-WebRoot', $resolvedWebRoot
+            ) | Out-Null
+    }
 
     $deadline = (Get-Date).AddSeconds(5)
     while ((Get-Date) -lt $deadline) {
@@ -87,7 +112,17 @@ if (-not (Test-CalibrationServer)) {
 }
 
 if ($CopyUrl) {
-    Set-Clipboard -Value $url
+    if ($script:IsWindowsPlatform) {
+        Set-Clipboard -Value $url
+    }
+    else {
+        $pbcopy = Get-Command pbcopy -ErrorAction SilentlyContinue
+        if ($null -eq $pbcopy) {
+            throw 'pbcopy was not found; cannot copy the calibration URL.'
+        }
+
+        $url | & $pbcopy.Source
+    }
 }
 
 Write-Output $url

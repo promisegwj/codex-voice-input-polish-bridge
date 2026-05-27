@@ -4,7 +4,13 @@
 
 ## Unreleased
 
-- 暂无。
+- 落地 v0.3 跨平台适配骨架：Windows 主链路保留，macOS 建立“读取语音历史 -> 本地整理 -> 审核页/剪贴板 -> 用户 Cmd+V”的最小闭环。
+- 新增 macOS 平台分支：默认读取 `$HOME/.codex/transcription-history.jsonl`，剪贴板使用 `pbcopy` / `pbpaste`，自动粘贴默认关闭。
+- 新增 `scripts/Publish-CodexVoiceBridge.ps1`，支持 `win-x64`、`osx-x64`、`osx-arm64` 和 `all` 发布目标。
+- 新增 `/api/platform` 和平台能力声明，设置页增加 macOS 实验自动粘贴开关。
+- 更新状态文案，明确区分“已回填”“已复制到剪贴板”“已跳过回填”，并提示用户确认后再发送。
+- 新增 v0.3 跨平台设计与验收文档：`docs/cross-platform-macos-plan-v0.3.md`。
+- 注意：本轮已完成 Windows 回归和跨平台发布产物生成；macOS 辅助功能权限和前台粘贴仍需实机验证。
 
 ## 0.2.0 - 2026-05-27
 

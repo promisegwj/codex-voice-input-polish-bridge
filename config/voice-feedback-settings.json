@@ -26,10 +26,11 @@
                               "pasteDelaySeconds":  0,
                               "autoApplyEnabled":  false,
                               "autoApplyPollMilliseconds":  500,
-                              "sentTextMonitorEnabled":  true,
+                              "sentTextMonitorEnabled":  false,
                               "sentTextMonitorDurationSeconds":  60,
                               "sentTextMonitorPollSeconds":  3,
                               "sentTextMonitorMinScore":  70,
+                              "macOsBestEffortPasteEnabled":  false,
                               "defaultRewriteRule":  "先判断原始口述的真实意图和任务边界；保留事实、否定、时间、数字、路径、文件名、专有名词和条件，不新增原文没有的信息。删除不承载意义的口头禅、重复句、犹豫词和自我打断；对“不是 A，是 B”“不对，改成 B”以后者为准。将“你能不能/是不是可以”改为直接可执行请求，但真正的可行性询问要保留为问题。多件事按 1、2、3 拆分，每项写成“动作 + 对象 + 验证/交付要求”。长句按意图断句，使用规范中文标点；保留必要的语气和不确定性，关键歧义标为“需确认”。输出应简洁、清楚、可执行，适合直接发给 Codex；不要额外添加固定标题。"
                           }
 }

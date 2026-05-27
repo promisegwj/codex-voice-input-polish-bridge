@@ -4,12 +4,12 @@
 
 ## 1. 项目定位
 
-本项目当前主线是优化 Windows 上的 Codex 中文语音输入链路：
+本项目当前主线是优化 Windows 和 macOS 上的 Codex 中文语音输入链路：
 
-- 优先读取 Codex 本地语音历史 `%USERPROFILE%\.codex\transcription-history.jsonl`，该文件会记录 Codex 语音识别结果。
+- Windows 优先读取 Codex 本地语音历史 `%USERPROFILE%\.codex\transcription-history.jsonl`，macOS 优先读取 `$HOME/.codex/transcription-history.jsonl`，该文件会记录 Codex 语音识别结果。
 - 可控上游输入源作为备用，可以是 TypeWhisper、本地 Whisper/Sherpa、Windows 语音输入到受控草稿框，或其他可自动输出文本的工具。
 - 整理内容包括繁转简、轻量纠错、去口头禅、常见英文术语音译纠正、要点总结、上下文压缩、节省 token 和提示词化。
-- 把整理后的文本复制到剪贴板，并由用户显式切回有焦点的 Codex 输入框后粘贴或替换，尽量接近飞书语音输入那种“先识别、再整理”的体验。
+- 把整理后的文本复制到剪贴板，并由用户显式切回有焦点的 Codex 输入框后粘贴或替换。Windows 可继续使用现有 UIA 自动回填；macOS v0.3 先保证剪贴板和审核页闭环，自动粘贴只是用户授权后的实验增强。
 
 本项目不追求复杂 UI，核心是把“Codex 本地语音历史/可控转写、整理、粘贴到 Codex”做成可验证、可替换、可维护的工作流。Codex 输入框草稿不能当作稳定可读取对象，但 Codex 语音历史文件可以作为当前优先入口。
 
@@ -22,9 +22,8 @@ TypeWhisper / Whisper 开源软件曾从主链路撤下；在“不能稳定读�
 工作优先级：
 
 1. 用户当前对话里的明确要求。
-2. 当前项目根目录的 `AGENTS.md`。
-3. 当前项目文档和本地配置。
-4. 历史 TypeWhisper 方案。
+2. 当前仓库文档、本地配置和工作目录中存在的协作规则。
+3. 历史 TypeWhisper 方案。
 
 当这些规则冲突时，优先满足用户当前明确要求；涉及安全、隐私、不可逆改动或凭据时，先说明风险并请求确认。
 
@@ -57,6 +56,8 @@ Codex built-in ASR -> focused Codex text field -> Ctrl+A/C attempt -> local brid
 TypeWhisper 过去看起来能“自动填入 Codex 输入框”，本质不是 Codex 专用直写接口，而是通用 Windows 粘贴链路：开始录音时记录前台窗口，识别结束后把结果写入剪贴板，再 `SetForegroundWindow` 切回目标窗口并发送 `Ctrl+V`。本项目可以借用这条技术路线，但要继续把它描述为“窗口级焦点恢复 + 剪贴板粘贴”，不要描述成绕过焦点写当前 composer。
 
 2026-05-25 已在 `scripts/Serve-ReviewPanel.ps1` 增加实验实现：`/api/latest-codex-transcription` 发现新转写时记录 `pasteTarget`，`/api/apply-final-text` 默认使用 `useCapturedTarget: true`，粘贴前先尝试把捕获窗口切回前台。用户实测表明，如果右侧审核页和 composer 位于同一个 Codex 桌面窗口，单纯 `SetForegroundWindow` 只会回到 Codex 窗口，焦点仍可能停在审核页；因此同日补充 UI Automation 焦点恢复：目标窗口是 Codex 时，先查找底部可聚焦 `ProseMirror` composer 并 `SetFocus()`，确认焦点落在 composer 后才发送 `Ctrl+A`、`Ctrl+V`。如果未找到或未成功聚焦 composer，应只保留剪贴板内容并跳过按键粘贴，避免改写审核页文本。服务以 `-STA` 启动且回填延迟为 0 秒时，优先在服务进程内直接写剪贴板、聚焦和发送按键，减少额外启动隐藏 PowerShell 的体感延迟。
+
+2026-05-27 v0.3 补充 macOS 路线：macOS 默认只承诺“读取 `$HOME/.codex/transcription-history.jsonl` -> 整理 -> 写入剪贴板/审核页 -> 用户 Cmd+V”。`scripts/Invoke-CodexVoiceBridge.ps1` 和 `scripts/Serve-ReviewPanel.ps1` 已增加平台分支：Windows 继续使用 STA / Windows Forms / user32 / UIAutomation；macOS 使用 `pbcopy` / `pbpaste`。macOS 自动粘贴默认关闭，只有用户开启 `macOsBestEffortPasteEnabled` 后，才通过 AppleScript/System Events 尝试激活 Codex 并发送 `Cmd+V`；失败时必须只保留剪贴板并返回明确跳过原因。
 
 ### 2.3 本地、免费、低延迟优先
 
@@ -100,16 +101,17 @@ TypeWhisper 过去看起来能“自动填入 Codex 输入框”，本质不是 
 - 剪贴板模式可以运行。
 - v0.2.0 golden case 通过。
 - 如果修改回填脚本，确认 `powershell -STA` 路径可用。
+- 如果修改 macOS 链路，确认 `pwsh`、`pbcopy` / `pbpaste`、`$HOME/.codex/transcription-history.jsonl` 路径和无权限降级可用。
 - 只有涉及 TypeWhisper 备用链路时，才需要验证 TypeWhisper API 状态。
 
 ## 3. 当前关键文件
 
-- `AGENTS.md`：Codex 工作规则、项目边界和协作方法。
-- `PROJECT-STATUS.md`：未来 Codex / 维护者进入项目时的总览入口，记录当前状态、架构地图、技术路线、执行规范和后续规划。
+- `README.md`：公开仓库的总览入口、安装说明和当前状态。
 - `TypeWhisper-Codex-Workflow.md`：当前 Codex 自带语音识别中介工作流和方案取舍。
 - `scripts/Invoke-CodexVoiceBridge.ps1`：读取 Codex 语音历史/剪贴板/尝试复制焦点文本、调用整理器、写回剪贴板、粘贴到输入框的中介脚本。
 - `scripts/Serve-ReviewPanel.ps1`：本地审核页服务，供 Codex in-app browser 打开 `http://127.0.0.1:8793/review-panel.html`，同时提供校准中心 API，包括 `/api/latest-codex-transcription`、`/api/polish` 和 `/api/apply-final-text`。
 - `scripts/Open-VoiceCalibrationCenter.ps1`：启动固定配置入口 `http://127.0.0.1:8793/` 的语音校准中心。
+- `scripts/Publish-CodexVoiceBridge.ps1`：跨平台发布整理器，支持 `current`、`win-x64`、`osx-x64`、`osx-arm64` 和 `all`。
 - `scripts/Invoke-VoiceFeedbackDailyIteration.ps1`：持续学习每日迭代脚本，读取本地差异记录并生成候选个人化规则。
 - `scripts/Invoke-VoiceFeedbackCleanup.ps1`：持续学习本地日志清理脚本，按保留天数、总容量和单日样本数清理 `.codex-tmp\voice-feedback\yyyy-MM-dd.jsonl`。
 - `scripts/Register-VoiceFeedbackDailyTask.ps1`：可选的 Windows 任务计划注册脚本；只有用户确认后才运行。
@@ -120,22 +122,23 @@ TypeWhisper 过去看起来能“自动填入 Codex 输入框”，本质不是 
 - `config/onboarding-topic-prompts.json`：安装期分层话题式自由口述提示，按轻松聊天、日常规划、工作任务和思考推理分层。
 - `config/voice-feedback-settings.json`：持续学习开关、每日迭代时间、固定配置入口偏好、主动校准热键、自动应用开关、记录目录、清理保留策略和隐私边界设置，默认关闭持续学习和自动应用。
 - `docs/voice-text-rule-optimization-plan-v0.2.0.md`：当前语音转文字整理规则优化实施规划，整合多子模型评审、主负责人审批、阶段计划、隐私门槛和最小测试集；涉及口头禅、数字误分条和结构化输出时优先阅读。
+- `docs/cross-platform-macos-plan-v0.3.md`：v0.3 Windows / macOS 跨平台适配方案，记录平台边界、Mac 剪贴板闭环、自动粘贴权限限制和验收矩阵。
 - `docs/voice-text-rule-optimization-plan.md`：v0.1.0 草案记录，保留方案演进背景。
 - `docs/onboarding-calibration.md`：安装期分层话题校准和个人语言习惯配置设计草案。
 - `web/review-panel.html`：Codex 右侧浏览器可打开的本地审核面板，展示原始识别、自动整理和可编辑最终文本。
-- `web/settings.html`：固定配置入口的语音校准中心，包含隐私说明、配置概览、持续学习、访问与启动、主动校准；“整理文本规则”会直接传给 `CodexVoicePromptBridge.exe`，保存后成为下次默认规则；“自动应用到输入框”开启后会持续轮询 Codex 最新语音历史，默认每 500ms 检查一次，发现新转写后调用 `/api/auto-apply-codex-transcription` 自动整理并尝试回填 Codex composer；页面顶部会显示发送保护提示，提醒用户等状态显示“可以发送”后再点击 Codex 发送；“开始校正”保留为手动校准流程，会在前台每 3 秒轮询 Codex 最新语音历史，发现新转写后自动导入整理；“保存样本”只有在最终发送文本不同于自动整理文本时才写入本机 JSONL，并展示保存路径或无差异跳过原因；“更新规则”会读取本机样本生成候选替换文件、触发自动清理并展示候选规则路径；后续 `/api/polish` 和自动应用接口会把候选替换作为精确替换应用到自动整理文本；“确认回填”会把发送给 Codex 的最终文本写入剪贴板，并尝试聚焦 Codex 底部 composer，成功后先全选原内容再粘贴；“发送后旁路确认”会在回填后短时间轮询 Codex 本地 `sessions\...\*.jsonl` 用户消息记录，命中相似新增消息后同步最终文本并尝试保存样本；“回填校验结果”显示最近一次回填状态、路径、目标窗口、延迟和跳过原因；备用入口降级为默认收起的高级诊断工具。
+- `web/settings.html`：固定配置入口的语音校准中心，包含隐私说明、配置概览、持续学习、访问与启动、主动校准；“整理文本规则”会直接传给 `CodexVoicePromptBridge`，保存后成为下次默认规则；“自动应用到输入框”开启后会持续轮询 Codex 最新语音历史，默认每 500ms 检查一次，发现新转写后调用 `/api/auto-apply-codex-transcription` 自动整理、写入剪贴板，并在当前平台允许时尝试回填 Codex composer；macOS 实验自动粘贴默认关闭，需要用户明确开启并授权；页面顶部会显示发送保护提示，提醒用户等状态显示“已回填”或按提示手动粘贴后再点击 Codex 发送；“开始校正”保留为手动校准流程；“回填校验结果”显示最近一次回填状态、路径、目标窗口、延迟和跳过原因。
 - `tools/TypeWhisperT2S/`：旧 TypeWhisper 方案的繁转简和轻量整理工具，保留为参考。
 - `typewhisper-win/`：上游 TypeWhisper 源码备份和可能的备用开发基础。
 
 ## 4. 推荐工作流
 
 1. 先确认用户要解决的是识别速度、识别准确率、提示词整理质量，还是回填自动化。
-2. 读取当前文档和相关脚本；新任务优先读 `AGENTS.md`、`PROJECT-STATUS.md`、`TypeWhisper-Codex-Workflow.md` 和 `docs/development-handbook.md`。
+2. 读取当前文档和相关脚本；新任务优先读 `README.md`、`TypeWhisper-Codex-Workflow.md` 和 `docs/development-handbook.md`。
 3. 先判断能否使用 Codex 本地语音历史；只有用户选择 TypeWhisper 或本地 Whisper 方案时才检查对应状态。
 4. 小范围修改整理规则或回填脚本。
 5. 跑最小验证。
 6. 把重要结论写回项目文档。
-7. 本项目产物不实现回复朗读/TTS；但 Codex 对用户的回复播报仍按 `voice自动读取讲解回复内容` 项目的既有规则执行。需要播报时直接调用那个项目的脚本，不在本项目新增包装器或复制播报逻辑。
+7. 本项目不包含回复朗读/TTS 功能；如使用者在本机另有回复播报规则，应按本地环境单独处理，不在本仓库新增包装器或复制播报逻辑。
 
 ## 5. 验证清单
 

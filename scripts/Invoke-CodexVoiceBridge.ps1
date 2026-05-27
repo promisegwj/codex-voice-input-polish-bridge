@@ -43,8 +43,32 @@ else {
     $PSScriptRoot
 }
 
+$script:IsWindowsPlatform = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)
+$script:IsMacOSPlatform = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::OSX)
+
+function Get-UserHomePath {
+    if (-not [string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
+        return $env:USERPROFILE
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($env:HOME)) {
+        return $env:HOME
+    }
+
+    return [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)
+}
+
 if ([string]::IsNullOrWhiteSpace($BridgeExe)) {
-    $BridgeExe = Join-Path $scriptRoot '..\tools\CodexVoicePromptBridge\publish-self-contained\CodexVoicePromptBridge.exe'
+    $bridgeCandidates = @(
+        (Join-Path $scriptRoot '..\tools\CodexVoicePromptBridge\publish-self-contained\CodexVoicePromptBridge.exe'),
+        (Join-Path $scriptRoot '..\tools\CodexVoicePromptBridge\publish-self-contained\CodexVoicePromptBridge'),
+        (Join-Path $scriptRoot '..\tools\CodexVoicePromptBridge\bin\Release\net10.0\CodexVoicePromptBridge.exe'),
+        (Join-Path $scriptRoot '..\tools\CodexVoicePromptBridge\bin\Release\net10.0\CodexVoicePromptBridge')
+    )
+    $BridgeExe = ($bridgeCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1)
+    if ([string]::IsNullOrWhiteSpace($BridgeExe)) {
+        $BridgeExe = $bridgeCandidates[0]
+    }
 }
 
 if ([string]::IsNullOrWhiteSpace($ReviewPagePath)) {
@@ -56,17 +80,33 @@ if ([string]::IsNullOrWhiteSpace($ReviewServerScript)) {
 }
 
 if ([string]::IsNullOrWhiteSpace($TranscriptionHistoryPath)) {
-    $TranscriptionHistoryPath = Join-Path $env:USERPROFILE '.codex\transcription-history.jsonl'
+    $TranscriptionHistoryPath = Join-Path (Get-UserHomePath) '.codex/transcription-history.jsonl'
 }
 
-if ([Threading.Thread]::CurrentThread.GetApartmentState() -ne 'STA') {
+if ($script:IsWindowsPlatform -and [Threading.Thread]::CurrentThread.GetApartmentState() -ne 'STA') {
     throw 'Clipboard and SendKeys require STA. Run this script with: powershell -STA -NoProfile -ExecutionPolicy Bypass -File ...'
 }
 
-Add-Type -AssemblyName System.Windows.Forms
-Add-Type -AssemblyName System.Drawing
+if ($script:IsWindowsPlatform) {
+    Add-Type -AssemblyName System.Windows.Forms
+    Add-Type -AssemblyName System.Drawing
+}
 
 function Get-ClipboardTextSafe {
+    if (-not $script:IsWindowsPlatform) {
+        $pbpaste = Get-Command pbpaste -ErrorAction SilentlyContinue
+        if ($null -eq $pbpaste) {
+            throw 'Unable to read the clipboard: pbpaste was not found. Use -Mode CodexHistory or provide text through a file/clipboard-capable shell.'
+        }
+
+        $output = & $pbpaste.Source 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            throw 'Unable to read text from the macOS clipboard with pbpaste.'
+        }
+
+        return ($output | Out-String).TrimEnd("`r", "`n")
+    }
+
     for ($i = 0; $i -lt 12; $i++) {
         try {
             if ([System.Windows.Forms.Clipboard]::ContainsText()) {
@@ -86,6 +126,20 @@ function Get-ClipboardTextSafe {
 function Set-ClipboardTextSafe {
     param([Parameter(Mandatory = $true)][string]$Text)
 
+    if (-not $script:IsWindowsPlatform) {
+        $pbcopy = Get-Command pbcopy -ErrorAction SilentlyContinue
+        if ($null -eq $pbcopy) {
+            throw 'Unable to write the clipboard: pbcopy was not found. The final text can still be printed with -Print.'
+        }
+
+        $Text | & $pbcopy.Source
+        if ($LASTEXITCODE -ne 0) {
+            throw 'Unable to write text to the macOS clipboard with pbcopy.'
+        }
+
+        return
+    }
+
     for ($i = 0; $i -lt 12; $i++) {
         try {
             [System.Windows.Forms.Clipboard]::SetText($Text)
@@ -100,6 +154,11 @@ function Set-ClipboardTextSafe {
 }
 
 function Clear-ClipboardSafe {
+    if (-not $script:IsWindowsPlatform) {
+        Set-ClipboardTextSafe -Text ''
+        return
+    }
+
     for ($i = 0; $i -lt 12; $i++) {
         try {
             [System.Windows.Forms.Clipboard]::Clear()
@@ -115,6 +174,28 @@ function Clear-ClipboardSafe {
 
 function Send-KeyChord {
     param([Parameter(Mandatory = $true)][string]$Keys)
+
+    if (-not $script:IsWindowsPlatform) {
+        if (-not $script:IsMacOSPlatform) {
+            throw 'Automatic paste is only implemented for Windows and macOS.'
+        }
+
+        $osascript = Get-Command osascript -ErrorAction SilentlyContinue
+        if ($null -eq $osascript) {
+            throw 'Automatic paste on macOS requires osascript. The final text has been copied; paste it manually with Cmd+V.'
+        }
+
+        $key = switch ($Keys) {
+            '^a' { 'a' }
+            '^c' { 'c' }
+            '^v' { 'v' }
+            default { throw "Unsupported macOS key chord: $Keys" }
+        }
+
+        & $osascript.Source -e 'tell application "Codex" to activate' -e "tell application `"System Events`" to keystroke `"$key`" using command down" | Out-Null
+        Start-Sleep -Milliseconds $DelayMs
+        return
+    }
 
     [System.Windows.Forms.SendKeys]::SendWait($Keys)
     Start-Sleep -Milliseconds $DelayMs
@@ -138,7 +219,11 @@ function Copy-FocusedInputText {
     param(
         [bool]$HadPreviousClipboardText,
         [string]$PreviousClipboardText
-    )
+)
+
+    if (-not $script:IsWindowsPlatform) {
+        throw 'ActiveInput mode is Windows-only. On macOS, use -Mode CodexHistory or -Mode Clipboard; automatic input capture is intentionally not implemented.'
+    }
 
     $captureMarker = "__CODEX_VOICE_BRIDGE_CAPTURE_$([Guid]::NewGuid().ToString('N'))__"
     Set-ClipboardTextSafe -Text $captureMarker
@@ -396,16 +481,36 @@ function Ensure-ReviewServer {
     $resolvedServerScript = (Resolve-Path -LiteralPath $ReviewServerScript).Path
     $resolvedWebRoot = (Resolve-Path -LiteralPath (Join-Path $scriptRoot '..\web')).Path
 
-    Start-Process `
-        -FilePath 'powershell' `
-        -WindowStyle Hidden `
-        -ArgumentList @(
-            '-NoProfile',
-            '-ExecutionPolicy', 'Bypass',
-            '-File', $resolvedServerScript,
-            '-Port', $ReviewPort,
-            '-WebRoot', $resolvedWebRoot
-        ) | Out-Null
+    $shellCommand = if ($script:IsWindowsPlatform) {
+        (Get-Command powershell.exe -ErrorAction SilentlyContinue)
+    }
+    else {
+        (Get-Command pwsh -ErrorAction SilentlyContinue)
+    }
+
+    if ($null -eq $shellCommand) {
+        throw 'Unable to start the review server: PowerShell was not found. Install PowerShell 7 on macOS, or start Serve-ReviewPanel.ps1 manually.'
+    }
+
+    $startArguments = @(
+        '-NoProfile',
+        '-ExecutionPolicy', 'Bypass',
+        '-File', $resolvedServerScript,
+        '-Port', $ReviewPort,
+        '-WebRoot', $resolvedWebRoot
+    )
+
+    if ($script:IsWindowsPlatform) {
+        Start-Process `
+            -FilePath $shellCommand.Source `
+            -WindowStyle Hidden `
+            -ArgumentList $startArguments | Out-Null
+    }
+    else {
+        Start-Process `
+            -FilePath $shellCommand.Source `
+            -ArgumentList $startArguments | Out-Null
+    }
 
     $deadline = (Get-Date).AddSeconds(5)
     while ((Get-Date) -lt $deadline) {
@@ -447,7 +552,11 @@ function Show-ReviewDialog {
     param(
         [Parameter(Mandatory = $true)][string]$RawText,
         [Parameter(Mandatory = $true)][string]$PolishedText
-    )
+)
+
+    if (-not $script:IsWindowsPlatform) {
+        throw 'The native review dialog is Windows-only. On macOS, use -WebReview to open the local browser review page.'
+    }
 
     $form = [System.Windows.Forms.Form]::new()
     $form.Text = 'Codex 语音输入确认'

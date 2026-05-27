@@ -1,15 +1,16 @@
 # Codex Voice Input Polish Bridge
 
-![Windows](https://img.shields.io/badge/Windows-local--first-0078D4)
+![Windows](https://img.shields.io/badge/Windows-stable-0078D4)
+![macOS](https://img.shields.io/badge/macOS-clipboard--MVP-000000)
 ![.NET](https://img.shields.io/badge/.NET-10.0-512BD4)
 ![PowerShell](https://img.shields.io/badge/PowerShell-automation-5391FE)
 ![No Cloud API](https://img.shields.io/badge/default-no%20cloud%20API-2E7D32)
 
-A local-first Windows bridge for people who use voice input with Codex and want the raw spoken transcript to become a cleaner, shorter, more actionable prompt.
+A local-first Windows and macOS bridge for people who use voice input with Codex and want the raw spoken transcript to become a cleaner, shorter, more actionable prompt.
 
 一个面向 Codex 桌面端的本地语音输入整理中介：读取 Codex 本地语音历史或剪贴板文本，把中文口述里的口头禅、重复、倒装、术语误识别和长句绕路整理成更适合直接发送给 Codex 的标准提示词，再通过剪贴板和前台焦点回填到输入框。
 
-> This is an independent helper project, not an official Codex plugin. It does not bypass Codex internals; the current stable path is local transcript history -> local polishing -> clipboard/focused input field.
+> This is an independent helper project, not an official Codex plugin. It does not bypass Codex internals; the stable path is local transcript history -> local polishing -> clipboard/review page -> focused input field or manual paste.
 
 ## Why This Exists
 
@@ -29,13 +30,14 @@ A local-first Windows bridge for people who use voice input with Codex and want 
 
 - 经常用 Codex、ChatGPT 或其他 AI 编程助手做长任务的人。
 - 希望用中文语音快速表达需求，但不想手动整理提示词的人。
-- 在 Windows 上工作，并希望语音链路尽量本地、低延迟、可替换的人。
+- 在 Windows 或 macOS 上工作，并希望语音链路尽量本地、低延迟、可替换的人。
 - 需要把口述内容压缩成任务列表、检查清单、开发要求或 PR 反馈的人。
 - 想研究“ASR 转写 -> 规则整理 -> AI prompt”的本地工作流的人。
 
 暂时不适合这些场景：
 
-- macOS/Linux 主力用户。
+- 需要 macOS 上完全自动回填、后台直写或全局热键的人。
+- Linux 主力用户。
 - 需要后台直写 Codex 当前 composer 的场景。
 - 需要云端 LLM 语义级重写且无需人工核验的场景。
 - 法律、医疗、保险等必须保留完整逐字语气证据的转写场景。
@@ -43,13 +45,14 @@ A local-first Windows bridge for people who use voice input with Codex and want 
 ## Highlights
 
 - **Local-first**: 默认不调用云端 API，不上传语音文本。
-- **Codex-aware**: 优先读取 `%USERPROFILE%\.codex\transcription-history.jsonl` 中的 Codex 语音识别结果。
+- **Codex-aware**: Windows 优先读取 `%USERPROFILE%\.codex\transcription-history.jsonl`，macOS 优先读取 `$HOME/.codex/transcription-history.jsonl`。
+- **macOS clipboard MVP**: v0.3 支持 macOS 读取语音历史、整理、网页审核、复制到剪贴板和用户手动 `Cmd+V`。
 - **Prompt-oriented**: 默认把口述整理成更短、更清楚、更可执行的 Codex 请求。
 - **Conservative structure planning**: v0.2.0 起默认不因普通数字、端口、版本号或整理规则里的“拆分/要点”误分条，只有明确枚举或高置信多任务才输出列表。
 - **Golden-case tested**: 包含机器可读 golden case 和 runner，用于验证数字、路径、否定、疑问、专有名词和结构化输出边界。
 - **Rule visible**: 网页里有专门的“整理文本规则”位置，规则会传给本地整理器。
 - **Reviewable**: 提供本地校准网页，可以对照原始识别、自动整理和人工最终文本。
-- **Safer defaults**: 持续学习、自动应用到输入框、随 Codex 启动都默认关闭。
+- **Safer defaults**: 持续学习、自动应用到输入框、macOS 实验自动粘贴、随 Codex 启动都默认关闭。
 - **Cleanup built in**: 本地学习样本有保留天数、容量和单日条数限制。
 - **GitHub-ready**: 带发布清单、贡献指南、路线图、安全说明、issue/PR 模板和 Windows CI。
 
@@ -71,10 +74,10 @@ CodexVoicePromptBridge
   - prompt-oriented compression
         |
         v
-clipboard / local review page / focused Codex input field
+clipboard / local review page / focused Codex input field / manual Cmd+V
 ```
 
-The project deliberately avoids writing Codex private storage, unknown IPC, or internal Electron state. 回填本质上仍是“写剪贴板 -> 恢复窗口焦点 -> 尝试聚焦输入框 -> 粘贴”。
+The project deliberately avoids writing Codex private storage, unknown IPC, or internal Electron state. 回填本质上仍是“写剪贴板 -> 恢复窗口焦点 -> 尝试聚焦输入框 -> 粘贴”。macOS v0.3 的成功标准是“可读、可整理、可审核、可复制/手动粘贴”，不是完全自动化。
 
 ## What The Rewrite Rule Does
 
@@ -93,7 +96,7 @@ The project deliberately avoids writing Codex private storage, unknown IPC, or i
 
 ### Requirements
 
-- Windows 10/11.
+- Windows 10/11, or macOS with PowerShell 7 for the clipboard/review workflow.
 - Codex desktop app with voice transcription history available.
 - .NET 10 SDK.
 - PowerShell 5.1+ or PowerShell 7+.
@@ -102,6 +105,12 @@ The project deliberately avoids writing Codex private storage, unknown IPC, or i
 
 ```powershell
 dotnet publish ".\tools\CodexVoicePromptBridge\CodexVoicePromptBridge.csproj" -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o ".\tools\CodexVoicePromptBridge\publish-self-contained"
+```
+
+To publish all supported runtime targets:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File ".\scripts\Publish-CodexVoiceBridge.ps1" -Runtime all
 ```
 
 ### Open The Calibration Center
@@ -126,6 +135,13 @@ powershell -STA -NoProfile -ExecutionPolicy Bypass -File ".\scripts\Invoke-Codex
 
 ```powershell
 powershell -STA -NoProfile -ExecutionPolicy Bypass -File ".\scripts\Invoke-CodexVoiceBridge.ps1" -Mode CodexHistory -NoPaste -Print
+```
+
+On macOS, use PowerShell 7 and paste manually after review/copy:
+
+```powershell
+pwsh -NoProfile -File "./scripts/Invoke-CodexVoiceBridge.ps1" -Mode CodexHistory -NoPaste -Print
+pwsh -NoProfile -File "./scripts/Invoke-CodexVoiceBridge.ps1" -Mode CodexHistory -NoPaste -WebReview
 ```
 
 ### Run Golden Cases
@@ -178,9 +194,10 @@ See [SECURITY.md](SECURITY.md) for the security policy and [docs/RELEASE_CHECKLI
 
 ## Current Status
 
-This is an early public release package. v0.2.0 includes the conservative structure-planning MVP and a clearer refill status loop. The core workflow is usable, but the project is still conservative by design:
+This is an early public release package. v0.3 adds the cross-platform boundary and macOS clipboard/review MVP while preserving the Windows v0.2 workflow. The core workflow is usable, but the project is still conservative by design:
 
-- It is Windows-first.
+- Windows remains the most automated path.
+- macOS supports the stable clipboard/manual paste loop; AppleScript/System Events paste is an opt-in experiment and still needs real-machine validation.
 - It uses rule-based text polishing, not full semantic LLM rewriting.
 - It relies on clipboard/focus automation for input refill, because Codex does not currently expose a stable public composer write API.
 - Strong rewrite mode and broader block-level filler cleanup are still future work.
@@ -213,6 +230,7 @@ Start with:
 - [Release Manifest](docs/RELEASE_MANIFEST.md)
 - [Oral To Standard Rules Draft](docs/ORAL_TO_STANDARD_RULES_DRAFT.md)
 - [Voice Text Rule Optimization Plan v0.2.0](docs/voice-text-rule-optimization-plan-v0.2.0.md)
+- [Cross Platform macOS Plan v0.3](docs/cross-platform-macos-plan-v0.3.md)
 - [Development Handbook](docs/development-handbook.md)
 - [Onboarding Calibration](docs/onboarding-calibration.md)
 - [Changelog](CHANGELOG.md)

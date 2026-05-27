@@ -10,6 +10,8 @@ Run this before creating a public release or pushing to a new remote.
 - [ ] `config/voice-feedback-settings.json` keeps safe defaults:
   - [ ] `feedbackLearning.enabled = false`
   - [ ] `activeCalibration.autoApplyEnabled = false`
+  - [ ] `activeCalibration.sentTextMonitorEnabled = false`
+  - [ ] `activeCalibration.macOsBestEffortPasteEnabled = false`
   - [ ] `fixedEntry.autoStartWithCodex = false`
 
 ## Validation
@@ -30,6 +32,7 @@ Get-ChildItem ".\scripts" -Filter *.ps1 | ForEach-Object {
 
 dotnet build ".\tools\CodexVoicePromptBridge\CodexVoicePromptBridge.csproj" -c Release
 powershell -NoProfile -ExecutionPolicy Bypass -File ".\tests\Run-VoiceBridgeGoldenCases.ps1"
+powershell -NoProfile -ExecutionPolicy Bypass -File ".\scripts\Publish-CodexVoiceBridge.ps1" -Runtime all
 dotnet build ".\tools\TypeWhisperT2S\TypeWhisperT2S.csproj" -c Release
 ```
 
@@ -37,6 +40,7 @@ dotnet build ".\tools\TypeWhisperT2S\TypeWhisperT2S.csproj" -c Release
 
 - [ ] Confirm `LICENSE` is Apache-2.0 and README links to it.
 - [ ] Update `CHANGELOG.md`.
+- [ ] For v0.3, explicitly note whether macOS was validated on a real machine or only by cross-publish/build checks.
 - [ ] Create a commit.
 - [ ] Add remote.
 - [ ] Push branch and tags.

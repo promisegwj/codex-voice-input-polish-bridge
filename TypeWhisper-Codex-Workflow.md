@@ -16,6 +16,7 @@ Codex 本地语音历史 / 可控上游输入源 -> 本地中介整理 -> 自动
 
 ```text
 %USERPROFILE%\.codex\transcription-history.jsonl
+$HOME/.codex/transcription-history.jsonl
 ```
 
 该文件已验证会记录 Codex 语音识别结果，字段包含 `id`、`createdAtMs` 和 `text`。因此不再需要从 Codex 输入框抓草稿；本项目可以读取最新语音历史，把它导入网页或命令行整理链路。“可控上游输入源”仍可作为备用，比如 TypeWhisper、本地 Whisper/Sherpa、Windows 语音输入到受控草稿框，或其他能够把原始转写写入剪贴板/文件的工具。
@@ -49,6 +50,8 @@ Codex 本地语音历史 / 可控上游输入源 -> 本地中介整理 -> 自动
 
 2026-05-27 v0.2.0 MVP 已落地：整理器支持 `--version` 和 `--debug-decision`，结构决策会输出 `mode`、`shouldList`、`confidence`、`reasons`、`protectedSpanCount`、`protectedSpans`。默认分条改为保守策略，只在明确枚举、明确步骤请求或高置信多任务信号下分条；数字、路径、版本号、否定、条件、疑问、不确定性、优先级、专有名词和近音技术词会作为保护跨度参与决策与输出校验。
 
+2026-05-27 v0.3 跨平台骨架已落地：整理器仍保持平台无关；命令行桥接脚本和本地审核服务新增 Windows / macOS 分支。Windows 继续使用 PowerShell STA、Windows Forms、user32、UI Automation 和 SendKeys；macOS 默认读取 `$HOME/.codex/transcription-history.jsonl`，剪贴板使用 `pbcopy` / `pbpaste`，自动粘贴默认关闭。用户开启 `macOsBestEffortPasteEnabled` 后，macOS 才会尝试通过 AppleScript/System Events 激活 Codex 并发送 `Cmd+V`；失败或无法确认目标时只保留剪贴板，并提示用户手动粘贴。
+
 ## 推荐使用方式
 
 推荐主路径：让上游语音工具把原始识别文本放入剪贴板，保持 Codex 输入框焦点在要插入的位置，然后运行：
@@ -66,6 +69,8 @@ powershell -WindowStyle Hidden -STA -NoProfile -ExecutionPolicy Bypass -File ".\
 ```
 
 校准网页新增“自动应用到输入框”开关：开启后，页面会按配置的检查间隔调用 `/api/auto-apply-codex-transcription`，默认每 500ms 检查一次，只读取 Codex 本地语音历史中的新记录；服务端发现新转写后会调用整理器、应用本地候选替换、写入剪贴板，并立即尝试切回捕获到的 Codex 窗口、聚焦底部 composer、发送 `Ctrl+A` + `Ctrl+V`。如果没有捕获到目标或聚焦失败，则只保留剪贴板文本，不误写审核页。这条路线是当前优先体验路线。页面会显示保护提示：自动应用开启时，语音结束后应等状态显示“可以发送”再点击 Codex 发送，否则可能先发出原始识别文本。
+
+macOS 推荐先使用最小闭环：用 Codex 语音输入后运行 `pwsh -NoProfile -File ./scripts/Invoke-CodexVoiceBridge.ps1 -Mode CodexHistory -NoPaste -Print` 查看整理结果，或运行 `-WebReview` 打开审核页；确认后让脚本写入剪贴板，再切回 Codex 按 `Cmd+V`。不要把 macOS 自动粘贴描述成后台直写，它只是剪贴板 + AppleScript 前台粘贴尝试。
 
 校准网页仍保留“开始校正”按钮：点击后记录当前最新语音历史位置，然后每 3 秒调用 `/api/latest-codex-transcription` 检查一次新记录；发现新转写后自动导入并整理，最多等待 2 分钟。页面也保留“导入 Codex 最新语音历史”按钮，供用户手动拉取最新记录。这些路径都不复制当前网页或输入框。原始识别文本区域只读，用于保持和导入的 Codex 语音文本一致。点击“确认回填”后，页面会把发送给 Codex 的最终文本写入剪贴板，并立即尝试切回此前捕获的 Codex 窗口、聚焦底部 composer，然后发送 `Ctrl+A` + `Ctrl+V`；如果没有捕获到目标或聚焦失败，则只保留剪贴板文本，不改写审核页。
 
