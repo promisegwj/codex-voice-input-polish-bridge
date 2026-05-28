@@ -66,7 +66,7 @@ static string? GetOptionValue(string[] args, string name)
 
 static string NormalizeRewriteRule(string? rewriteRule)
 {
-    const string defaultRewriteRule = "先判断原始口述的真实意图和任务边界；保留事实、否定、时间、数字、路径、文件名、专有名词和条件，不新增原文没有的信息。删除不承载意义的口头禅、重复句、犹豫词和自我打断；对“不是 A，是 B”“不对，改成 B”以后者为准。将“你能不能/是不是可以”改为直接可执行请求，但真正的可行性询问要保留为问题。多件事按 1、2、3 拆分，每项写成“动作 + 对象 + 验证/交付要求”。长句按意图断句，使用规范中文标点；保留必要的语气和不确定性，关键歧义标为“需确认”。输出应简洁、清楚、可执行，适合直接发给 Codex；不要额外添加固定标题。";
+    const string defaultRewriteRule = "先判断原始口述的真实意图和任务边界；保留事实、否定、时间、数字、路径、文件名、专有名词和条件，不新增原文没有的信息。删除不承载意义的口头禅、重复句、犹豫词和自我打断；对“不是 A，是 B”“不对，改成 B”以后者为准。将“你能不能/是不是可以”改为直接可执行请求，但真正的可行性询问要保留为问题。多件事按 1、2、3 拆分，每项写成“动作 + 对象 + 验证/交付要求”。长句按意图断句，使用规范中文标点；保留必要的语气和不确定性，关键歧义标为“需确认”。结合上下文纠正常见同音字、近音词和技术/对象名称，如 GitHub、网页、文件名和链接；但禁止把单字、短英文碎片、URL、线程链接或文件名当作跨场景全局替换。用户后补的链接、文件名、标题只在本次文本中明确出现时保留，不从历史样本自动补入。删除口头衔接和误触发短句时，必须确认它不承载范围、排除、条件或对象关系；与事实保留规则冲突时，以保留事实和边界为准。输出应简洁、清楚、可执行，适合直接发给 Codex；不要额外添加固定标题。";
     var normalized = (rewriteRule ?? string.Empty).Trim();
     return string.IsNullOrWhiteSpace(normalized) ? defaultRewriteRule : normalized;
 }
@@ -205,6 +205,7 @@ static string RemoveSpeechFillers(string text)
     cleaned = Regex.Replace(cleaned, @"^((那么|嗯|呃|额|啊|那个|这个|就是|然后|好的|好|那)[，,\s]*)+", "");
     cleaned = Regex.Replace(cleaned, @"(?<=[，。！？、\s])(怎么说呢|反正就是|大概就是说|就是说)(?=[，。！？、\s])", "");
     cleaned = Regex.Replace(cleaned, @"(?<=[，,])就是(?=(先|请|帮|把|看|检查|给))", "");
+    cleaned = Regex.Replace(cleaned, @"(^|[，,。！？\s])让我一次[，,]?(就是)?(?=(帮|请|看|检查|处理|做|把|给|[，,。！？\s]|$))", "$1");
     cleaned = Regex.Replace(cleaned, @"(比如|例如)[，,、\s]*(然后|嗯|呃|额|啊|那个|这个|就是)[啊呃嗯额]*(什么的|之类的)", "$1“$2”等");
     cleaned = Regex.Replace(cleaned, @"(然后|嗯|呃|额|啊|那个|这个|就是)[啊呃嗯额]+(?=(什么的|之类的|等等|等|[，。！？、,\s]|$))", "$1");
     cleaned = Regex.Replace(cleaned, @"(?<=[\u4e00-\u9fffA-Za-z0-9])啊(?=(什么的|之类的|等等|等|[，。！？、,\s]|$))", "");

@@ -64,6 +64,7 @@ $listener.Prefixes.Add($prefix)
 $listener.Start()
 
 $script:LastPasteTarget = $null
+$script:LastFeedbackDailyCheckAt = [datetime]::MinValue
 
 function Ensure-FocusNativeMethods {
     if (-not $script:IsWindowsPlatform) {
@@ -258,6 +259,96 @@ function Resolve-ProjectPath {
     return (Join-Path $projectRoot $PathValue)
 }
 
+function Get-FeedbackStorageDir {
+    param([Parameter(Mandatory = $true)]$Settings)
+
+    $storagePath = if ($Settings.feedbackLearning -and $Settings.feedbackLearning.storageDir) {
+        [string]$Settings.feedbackLearning.storageDir
+    }
+    else {
+        '.codex-tmp/voice-feedback'
+    }
+
+    return Resolve-ProjectPath $storagePath
+}
+
+function Get-FeedbackIterationStatePath {
+    param([Parameter(Mandatory = $true)]$Settings)
+
+    $profilePath = if ($Settings.feedbackLearning -and $Settings.feedbackLearning.generatedProfilePath) {
+        Resolve-ProjectPath ([string]$Settings.feedbackLearning.generatedProfilePath)
+    }
+    else {
+        Resolve-ProjectPath '.codex-tmp/voice-feedback/generated/voice-feedback-learning.generated.json'
+    }
+
+    return (Join-Path (Split-Path -Parent $profilePath) 'daily-iteration-state.json')
+}
+
+function Read-FeedbackIterationState {
+    param([Parameter(Mandatory = $true)]$Settings)
+
+    $statePath = Get-FeedbackIterationStatePath -Settings $Settings
+    if (-not (Test-Path -LiteralPath $statePath)) {
+        return [pscustomobject]@{}
+    }
+
+    try {
+        return Get-Content -Raw -Encoding UTF8 -LiteralPath $statePath | ConvertFrom-Json
+    }
+    catch {
+        return [pscustomobject]@{}
+    }
+}
+
+function Write-FeedbackIterationState {
+    param(
+        [Parameter(Mandatory = $true)]$Settings,
+        [Parameter(Mandatory = $true)]$State
+    )
+
+    $statePath = Get-FeedbackIterationStatePath -Settings $Settings
+    $stateParent = Split-Path -Parent $statePath
+    if (-not [string]::IsNullOrWhiteSpace($stateParent) -and -not (Test-Path -LiteralPath $stateParent)) {
+        New-Item -ItemType Directory -Path $stateParent | Out-Null
+    }
+
+    $State | ConvertTo-Json -Depth 8 | Set-Content -Encoding UTF8 -LiteralPath $statePath
+}
+
+function Get-LatestFeedbackLogDate {
+    param([Parameter(Mandatory = $true)]$Settings)
+
+    $feedbackRoot = Get-FeedbackStorageDir -Settings $Settings
+    if (-not (Test-Path -LiteralPath $feedbackRoot)) {
+        return ''
+    }
+
+    $today = (Get-Date).Date
+    $dates = @(
+        Get-ChildItem -LiteralPath $feedbackRoot -Filter '*.jsonl' -File -ErrorAction SilentlyContinue |
+            ForEach-Object {
+                $parsed = [datetime]::MinValue
+                if ([datetime]::TryParseExact(
+                    $_.BaseName,
+                    'yyyy-MM-dd',
+                    [System.Globalization.CultureInfo]::InvariantCulture,
+                    [System.Globalization.DateTimeStyles]::None,
+                    [ref]$parsed
+                ) -and $parsed.Date -le $today) {
+                    $parsed.Date
+                }
+            } |
+            Sort-Object -Descending
+    )
+
+    if ($dates.Count -eq 0) {
+        return ''
+    }
+
+    return $dates[0].ToString('yyyy-MM-dd')
+}
+
 function Get-DefaultSettings {
     return [pscustomobject]@{
         version = 1
@@ -292,7 +383,7 @@ function Get-DefaultSettings {
             sentTextMonitorPollSeconds = 3
             sentTextMonitorMinScore = 70
             macOsBestEffortPasteEnabled = $false
-            defaultRewriteRule = '先判断原始口述的真实意图和任务边界；保留事实、否定、时间、数字、路径、文件名、专有名词和条件，不新增原文没有的信息。删除不承载意义的口头禅、重复句、犹豫词和自我打断；对“不是 A，是 B”“不对，改成 B”以后者为准。将“你能不能/是不是可以”改为直接可执行请求，但真正的可行性询问要保留为问题。多件事按 1、2、3 拆分，每项写成“动作 + 对象 + 验证/交付要求”。长句按意图断句，使用规范中文标点；保留必要的语气和不确定性，关键歧义标为“需确认”。输出应简洁、清楚、可执行，适合直接发给 Codex；不要额外添加固定标题。'
+            defaultRewriteRule = '先判断原始口述的真实意图和任务边界；保留事实、否定、时间、数字、路径、文件名、专有名词和条件，不新增原文没有的信息。删除不承载意义的口头禅、重复句、犹豫词和自我打断；对“不是 A，是 B”“不对，改成 B”以后者为准。将“你能不能/是不是可以”改为直接可执行请求，但真正的可行性询问要保留为问题。多件事按 1、2、3 拆分，每项写成“动作 + 对象 + 验证/交付要求”。长句按意图断句，使用规范中文标点；保留必要的语气和不确定性，关键歧义标为“需确认”。结合上下文纠正常见同音字、近音词和技术/对象名称，如 GitHub、网页、文件名和链接；但禁止把单字、短英文碎片、URL、线程链接或文件名当作跨场景全局替换。用户后补的链接、文件名、标题只在本次文本中明确出现时保留，不从历史样本自动补入。删除口头衔接和误触发短句时，必须确认它不承载范围、排除、条件或对象关系；与事实保留规则冲突时，以保留事实和边界为准。输出应简洁、清楚、可执行，适合直接发给 Codex；不要额外添加固定标题。'
         }
     }
 }
@@ -1967,7 +2058,7 @@ function Write-FeedbackRecord {
 }
 
 function Invoke-FeedbackLearningIteration {
-    param([string]$Date = (Get-Date -Format 'yyyy-MM-dd'))
+    param([string]$Date = '')
 
     $iterationScript = Join-Path $scriptRoot 'Invoke-VoiceFeedbackDailyIteration.ps1'
     if (-not (Test-Path -LiteralPath $iterationScript)) {
@@ -1977,11 +2068,35 @@ function Invoke-FeedbackLearningIteration {
         }
     }
 
+    $settings = Read-Settings
+    $effectiveDate = ''
+    if (-not [string]::IsNullOrWhiteSpace($Date)) {
+        try {
+            $effectiveDate = ([datetime]::ParseExact($Date, 'yyyy-MM-dd', [System.Globalization.CultureInfo]::InvariantCulture)).ToString('yyyy-MM-dd')
+        }
+        catch {
+            return [pscustomobject]@{
+                generated = $false
+                reason = 'invalid_iteration_date'
+            }
+        }
+    }
+    else {
+        $effectiveDate = Get-LatestFeedbackLogDate -Settings $settings
+    }
+
+    if ([string]::IsNullOrWhiteSpace($effectiveDate)) {
+        return [pscustomobject]@{
+            generated = $false
+            reason = 'no_feedback_log_found'
+        }
+    }
+
     $arguments = @(
         '-NoProfile',
         '-ExecutionPolicy', 'Bypass',
         '-File', $iterationScript,
-        '-Date', $Date,
+        '-Date', $effectiveDate,
         '-Force',
         '-SettingsPath', $SettingsPath
     )
@@ -1990,7 +2105,21 @@ function Invoke-FeedbackLearningIteration {
         $arguments += @('-FeedbackDir', $FeedbackDir)
     }
 
-    $output = & powershell.exe @arguments 2>&1
+    $shellCommand = if ($script:IsWindowsPlatform) {
+        Get-Command powershell.exe -ErrorAction SilentlyContinue
+    }
+    else {
+        Get-Command pwsh -ErrorAction SilentlyContinue
+    }
+
+    if ($null -eq $shellCommand) {
+        return [pscustomobject]@{
+            generated = $false
+            reason = 'powershell_not_found'
+        }
+    }
+
+    $output = & $shellCommand.Source @arguments 2>&1
     $outputText = ($output | Out-String).Trim()
     if ($LASTEXITCODE -ne 0) {
         return [pscustomobject]@{
@@ -2038,10 +2167,77 @@ function Invoke-FeedbackLearningIteration {
     }
 }
 
+function Invoke-DueFeedbackLearningIteration {
+    $now = Get-Date
+    if (($now - $script:LastFeedbackDailyCheckAt).TotalSeconds -lt 30) {
+        return $null
+    }
+
+    $script:LastFeedbackDailyCheckAt = $now
+    $settings = Read-Settings
+    if (-not $settings.feedbackLearning -or -not [bool]$settings.feedbackLearning.enabled) {
+        return $null
+    }
+
+    $timeText = if ($settings.feedbackLearning.dailyIterationTime -match '^\d{2}:\d{2}$') {
+        [string]$settings.feedbackLearning.dailyIterationTime
+    }
+    else {
+        '00:00'
+    }
+
+    $timeParts = $timeText.Split(':')
+    $dueAt = $now.Date.AddHours([int]$timeParts[0]).AddMinutes([int]$timeParts[1])
+    if ($now -lt $dueAt) {
+        return $null
+    }
+
+    $runKey = $now.ToString('yyyy-MM-dd')
+    $state = Read-FeedbackIterationState -Settings $settings
+    if ($state.PSObject.Properties.Item('lastRunKey') -and [string]$state.lastRunKey -eq $runKey) {
+        return $null
+    }
+
+    $sourceDate = $now.Date.AddDays(-1).ToString('yyyy-MM-dd')
+    $feedbackRoot = Get-FeedbackStorageDir -Settings $settings
+    $sourceLog = Join-Path $feedbackRoot "$sourceDate.jsonl"
+    $result = if (Test-Path -LiteralPath $sourceLog) {
+        Invoke-FeedbackLearningIteration -Date $sourceDate
+    }
+    else {
+        [pscustomobject]@{
+            generated = $false
+            reason = 'source_log_not_found'
+            sourceDate = $sourceDate
+            sourceLog = $sourceLog
+        }
+    }
+
+    Write-FeedbackIterationState -Settings $settings -State ([pscustomobject]@{
+        lastRunKey = $runKey
+        lastCheckedAt = $now.ToString('o')
+        scheduledTime = $timeText
+        sourceDate = $sourceDate
+        sourceLog = $sourceLog
+        generated = [bool]$result.generated
+        reason = [string]$result.reason
+        changedEvents = if ($result.PSObject.Properties.Item('changedEvents')) { [int]$result.changedEvents } else { 0 }
+        replacementCandidateCount = if ($result.PSObject.Properties.Item('replacementCandidateCount')) { [int]$result.replacementCandidateCount } else { 0 }
+    })
+
+    return $result
+}
+
 try {
     while ($listener.IsListening) {
         $context = $listener.GetContext()
         $requestPath = [System.Uri]::UnescapeDataString($context.Request.Url.AbsolutePath.TrimStart('/'))
+        try {
+            Invoke-DueFeedbackLearningIteration | Out-Null
+        }
+        catch {
+            # Keep the review service responsive even if local learning iteration fails.
+        }
 
         if ([string]::IsNullOrWhiteSpace($requestPath)) {
             $requestPath = 'settings.html'
@@ -2384,7 +2580,10 @@ try {
                 continue
             }
 
-            Send-JsonResponse -Response $context.Response -Value (Invoke-FeedbackLearningIteration -Date (Get-Date -Format 'yyyy-MM-dd'))
+            $body = Read-RequestBody -Request $context.Request
+            $payload = if ([string]::IsNullOrWhiteSpace($body)) { [pscustomobject]@{} } else { $body | ConvertFrom-Json }
+            $requestedDate = if ($payload.PSObject.Properties.Item('date')) { [string]$payload.date } else { '' }
+            Send-JsonResponse -Response $context.Response -Value (Invoke-FeedbackLearningIteration -Date $requestedDate)
             continue
         }
 

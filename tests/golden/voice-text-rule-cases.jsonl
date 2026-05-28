@@ -6,6 +6,7 @@
 {"id":"explicit_steps_three_items","category":"明确步骤分条","input":"请按步骤处理，首先读取 AGENTS.md，其次运行剪贴板测试，最后给我结论。","assert":{"shouldList":true,"itemCount":3,"containsAll":["读取 AGENTS.md","运行剪贴板测试","给出结论"],"mustPreserveOrder":["读取 AGENTS.md","运行剪贴板测试","给出结论"]}}
 {"id":"filler_block_cleanup","category":"口头禅块清理","input":"然后的话你帮我看一下这个项目。","assert":{"shouldList":false,"containsAll":["检查这个项目"],"notContains":["然后的话"],"forbiddenRegex":["(?m)^\\s*\\d+[\\.、．]"]}}
 {"id":"combined_filler_cleanup","category":"组合口癖清理","input":"嗯然后就是说你先别改代码，就是先给我方案。","assert":{"shouldList":false,"containsAll":["你先别改代码","先给出方案"],"notContains":["嗯然后","就是说"],"forbiddenRegex":["(?m)^\\s*\\d+[\\.、．]"]}}
+{"id":"learned_filler_fragment_cleanup","category":"学习候选口癖清理","input":"让我一次，就是帮我看一下这个项目。","assert":{"shouldList":false,"containsAll":["检查这个项目"],"notContains":["让我一次","就是"],"forbiddenRegex":["(?m)^\\s*\\d+[\\.、．]"]}}
 {"id":"judgement_word_protected","category":"判断词保护","input":"问题就是路径不对。","assert":{"shouldList":false,"containsAll":["问题就是路径不对"],"forbiddenRegex":["(?m)^\\s*\\d+[\\.、．]"]}}
 {"id":"explanation_word_protected","category":"解释词保护","input":"也就是说，它不是后台直写。","assert":{"shouldList":false,"containsAll":["也就是说","不是后台直写"],"forbiddenRegex":["(?m)^\\s*\\d+[\\.、．]"]}}
 {"id":"sequence_word_protected","category":"顺序词保护","input":"先启动服务，然后打开页面。","assert":{"shouldList":false,"containsAll":["先启动服务","然后打开页面"],"mustPreserveOrder":["先启动服务","然后打开页面"],"forbiddenRegex":["(?m)^\\s*\\d+[\\.、．]"]}}

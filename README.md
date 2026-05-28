@@ -52,6 +52,7 @@ A local-first Windows and macOS bridge for people who use voice input with Codex
 - **Golden-case tested**: 包含机器可读 golden case 和 runner，用于验证数字、路径、否定、疑问、专有名词和结构化输出边界。
 - **Rule visible**: 网页里有专门的“整理文本规则”位置，规则会传给本地整理器。
 - **Reviewable**: 提供本地校准网页，可以对照原始识别、自动整理和人工最终文本。
+- **Conservative learning**: 持续学习只生成本地候选，默认过滤单字、短英文、URL、线程链接、文件名和整句级改写。
 - **Safer defaults**: 持续学习、自动应用到输入框、macOS 实验自动粘贴、随 Codex 启动都默认关闭。
 - **Cleanup built in**: 本地学习样本有保留天数、容量和单日条数限制。
 - **GitHub-ready**: 带发布清单、贡献指南、路线图、安全说明、issue/PR 模板和 Windows CI。
@@ -89,6 +90,7 @@ The project deliberately avoids writing Codex private storage, unknown IPC, or i
 - 对“不是 A，是 B”“不对，改成 B”以后者为准。
 - 只在明确枚举、明确步骤请求或高置信多任务信号下拆成 `1、2、3`；普通数字、端口、版本号、型号、时间、快捷键和模糊数量不会单独触发分条。
 - 遇到关键歧义时保留“需确认”，不编造用户没有说过的信息。
+- 结合当前文本纠正常见近音技术词，但不把文件名、链接、标题等一次性内容学成跨场景全局插入。
 
 完整规则草案见 [docs/ORAL_TO_STANDARD_RULES_DRAFT.md](docs/ORAL_TO_STANDARD_RULES_DRAFT.md)，v0.2.0 结构规划见 [docs/voice-text-rule-optimization-plan-v0.2.0.md](docs/voice-text-rule-optimization-plan-v0.2.0.md)。
 

@@ -1,4 +1,4 @@
-﻿[CmdletBinding()]
+[CmdletBinding()]
 param(
     [string]$Date = '',
 
@@ -82,6 +82,7 @@ else {
 
 $logPath = Join-Path $FeedbackDir "$sourceDate.jsonl"
 $records = New-Object System.Collections.Generic.List[object]
+$recordFingerprints = @{}
 
 if (Test-Path -LiteralPath $logPath) {
     foreach ($line in Get-Content -Encoding UTF8 -LiteralPath $logPath) {
@@ -98,6 +99,15 @@ if (Test-Path -LiteralPath $logPath) {
                     continue
                 }
 
+                $fingerprintSource = ([string]$record.rawText) + [char]31 + $autoText + [char]31 + $finalText
+                $fingerprintBytes = [System.Text.Encoding]::UTF8.GetBytes($fingerprintSource)
+                $fingerprintHash = [System.Security.Cryptography.SHA256]::Create().ComputeHash($fingerprintBytes)
+                $fingerprint = [BitConverter]::ToString($fingerprintHash) -replace '-', ''
+                if ($recordFingerprints.ContainsKey($fingerprint)) {
+                    continue
+                }
+
+                $recordFingerprints[$fingerprint] = $true
                 $records.Add($record)
             }
         }
@@ -167,6 +177,47 @@ function Get-TextDelta {
     }
 }
 
+function Test-ReplacementCandidate {
+    param([Parameter(Mandatory = $true)]$Candidate)
+
+    $autoFragment = if ($Candidate.PSObject.Properties.Item('autoFragment')) { [string]$Candidate.autoFragment } else { '' }
+    $preferredFragment = if ($Candidate.PSObject.Properties.Item('preferredFragment')) { [string]$Candidate.preferredFragment } else { '' }
+
+    if ([string]::IsNullOrWhiteSpace($autoFragment)) {
+        return $false
+    }
+
+    if ($autoFragment.Trim() -eq $preferredFragment.Trim()) {
+        return $false
+    }
+
+    if ($autoFragment.Length -lt 3 -or $autoFragment.Length -gt 40 -or $preferredFragment.Length -gt 80) {
+        return $false
+    }
+
+    if ($autoFragment -match '[\r\n]' -or $preferredFragment -match '[\r\n]') {
+        return $false
+    }
+
+    if ($autoFragment -match '(?i)(https?://|codex://|[a-z]:\\|\.jsonl|\.md\b)' -or $preferredFragment -match '(?i)(https?://|codex://|[a-z]:\\|\.jsonl|\.md\b)') {
+        return $false
+    }
+
+    if ($autoFragment -match '^[\p{P}\p{S}\d\s]+$') {
+        return $false
+    }
+
+    if ([string]::IsNullOrWhiteSpace($preferredFragment)) {
+        if ($autoFragment -match '(\u4EE5\u5916|\u4E4B\u5916|\u53E6\u5916|\u9664\u5916|\u9664\u4E86|\u4E0D|\u4E0D\u8981|\u5FC5\u987B|\u5982\u679C|\u662F\u5426)') {
+            return $false
+        }
+
+        return ($autoFragment -match '(\u55EF|\u5443|\u554A|\u8FD9\u4E2A|\u90A3\u4E2A|\u5C31\u662F|\u7136\u540E|\u8BA9\u6211|\u4E00\u4E0B)')
+    }
+
+    return $true
+}
+
 $candidateCounts = @{}
 $rewriteRuleCounts = @{}
 $changedEvents = 0
@@ -208,8 +259,10 @@ foreach ($record in $records) {
     $candidateCounts[$key].count++
 }
 
+$candidateValues = @($candidateCounts.Values)
 $replacementCandidates = @(
-    $candidateCounts.Values |
+    $candidateValues |
+        Where-Object { Test-ReplacementCandidate -Candidate $_ } |
         Sort-Object -Property @{ Expression = 'count'; Descending = $true }, autoFragment, preferredFragment |
         Select-Object -First 50
 )
@@ -229,6 +282,23 @@ $profile = [pscustomobject]@{
     changedEvents = $changedEvents
     rewriteRuleSamples = $rewriteRuleSamples
     replacementCandidates = $replacementCandidates
+    candidateReview = [pscustomobject]@{
+        totalDerivedCandidates = $candidateValues.Count
+        safeReplacementCandidates = $replacementCandidates.Count
+        skippedCandidates = [Math]::Max(0, $candidateValues.Count - $replacementCandidates.Count)
+        policy = 'layer_non_conflicting_exact_replacements; adapt_general_rule_when_samples_conflict_with_existing_boundaries'
+    }
+    ruleAdjustments = [pscustomobject]@{
+        nonConflictingAdditions = @(
+            'Keep conservative exact replacements local and context-bound.',
+            'Preserve user-provided filenames, links, and titles only when they appear in the current text; do not learn them as global insertions.',
+            'Remove filler fragments only when they do not carry scope, exclusion, condition, or object boundaries.'
+        )
+        conflictHandling = @(
+            'Skip single-character replacements, short English fragments, URLs, thread links, filenames, and sentence-scale rewrites.',
+            'When a learned fragment conflicts with fact preservation, prefer fact and boundary preservation over replacement.'
+        )
+    }
     boundaries = [pscustomobject]@{
         source = 'codex_voice_web_review_or_active_calibration_only'
         keyboardMouseMonitoring = $false

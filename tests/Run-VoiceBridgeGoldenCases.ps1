@@ -27,10 +27,10 @@ $casePathResolved = (Resolve-Path -LiteralPath $CasePath).Path
 $bridgeProject = Join-Path $projectRoot 'tools\CodexVoicePromptBridge\CodexVoicePromptBridge.csproj'
 if ([string]::IsNullOrWhiteSpace($BridgeExe)) {
     $bridgeCandidates = @(
-        (Join-Path $projectRoot 'tools\CodexVoicePromptBridge\bin\Release\net10.0\CodexVoicePromptBridge.exe'),
-        (Join-Path $projectRoot 'tools\CodexVoicePromptBridge\bin\Release\net10.0\CodexVoicePromptBridge'),
         (Join-Path $projectRoot 'tools\CodexVoicePromptBridge\publish-self-contained\CodexVoicePromptBridge.exe'),
-        (Join-Path $projectRoot 'tools\CodexVoicePromptBridge\publish-self-contained\CodexVoicePromptBridge')
+        (Join-Path $projectRoot 'tools\CodexVoicePromptBridge\publish-self-contained\CodexVoicePromptBridge'),
+        (Join-Path $projectRoot 'tools\CodexVoicePromptBridge\bin\Release\net10.0\CodexVoicePromptBridge.exe'),
+        (Join-Path $projectRoot 'tools\CodexVoicePromptBridge\bin\Release\net10.0\CodexVoicePromptBridge')
     )
     $BridgeExe = ($bridgeCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1)
 }
