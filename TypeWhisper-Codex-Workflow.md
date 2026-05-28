@@ -140,7 +140,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File ".\scripts\Open-VoiceCalibra
 2. 主动校准：用户在同一个网页里选择分层话题。可靠流程是点击“开始校正”，页面记录当前最新语音历史位置，然后每 3 秒检查一次 `.codex\transcription-history.jsonl` 是否出现新记录；用户在 Codex 里完成语音输入后，页面检测到新转写就自动导入并生成整理文本。该监听只在用户点击后前台运行，最长 2 分钟，不复制当前焦点内容。页面也保留“导入 Codex 最新语音历史”和“手动导入识别结果”作为高级诊断工具，主流程正常时默认收起。
 3. 自动应用：用户明确开启“自动应用到输入框”后，页面会持续轮询 Codex 语音历史，默认检查间隔为 500ms；发现新记录就调用 `/api/auto-apply-codex-transcription` 完成读取、整理、候选替换、剪贴板写入和 Codex composer 回填尝试。它仍不监听键盘、鼠标或普通手动输入，也不读取当前 composer 草稿。页面不能拦截 Codex 的发送按钮，也不能直接获知用户是否已经点击发送；但回填后可启动“发送后旁路确认”，在限定时间内轮询 Codex 本地 `sessions\...\*.jsonl` 会话记录，发现与回填文本相似的新增用户消息后，把这条真正进入对话的文本同步回本页“发送给 Codex 的最终文本”并尝试保存样本。默认监听 60 秒，每 3 秒检查一次，只读 Codex 本地会话记录，不监听键盘、鼠标、屏幕或普通手动输入。页面会用顶部保护提示提醒用户：语音结束后先等自动应用状态显示“可以发送”，再点击 Codex 发送。校准样本以本页“发送给 Codex 的最终文本”为准；只有当“发送给 Codex 的最终文本”和“自动整理文本”存在差异时才写入本地 JSONL，因为完全一致的文本不能为后续规则学习提供增量。用户修改这段最终文本后，可点击“保存样本”触发同一条差异判断，并在页面展示保存路径或跳过原因；“更新规则”会基于已保存样本生成候选替换文件，并在页面展示候选规则路径、样本数和候选数；更新后 `/api/polish` 和自动应用接口会把候选作为保守的精确替换应用到自动整理文本，但不会改写 `CodexVoicePromptBridge` 的永久源码规则。默认整理方向是在保留核心意图的前提下总结要点、压缩上下文、节省 token，并让输出更像清晰可执行的 AI 提示词；整理器会尽量去除或归一化“然后啊”等口头禅；遇到“是否按照……要求做到了”这类口语倒装句时，会重组为“是否做到了……要求”；当整理规则要求“整体意图、重组、拆分、总结要点”时，整理器会优先保留 1、2、3 点的结构化表达，但不再自动添加 `请执行：` 这类标题前缀，也不把整理规则本身追加成“要求：...”。
 
-访问与启动是单独配置。“固定配置入口”开启后建议固定使用 `http://127.0.0.1:8793/`；“随 Codex 启动”表示启动 Codex 时自动启动本地校准服务并打开固定配置网页。真正注册启动任务需要用户明确确认后再执行。
+访问与启动是单独配置。“固定配置入口”开启后建议固定使用 `http://127.0.0.1:8793/`；“随 Codex 启动”开启后会注册本机登录启动入口，优先使用 Windows 任务计划程序；如果当前权限或系统策略拒绝写入任务计划程序，则退回到当前用户启动文件夹快捷方式。该入口会在 Windows 登录后自动启动本地校准服务，使 Codex 打开时可以直接使用语音输入整理。首次真正注册或移除启动入口需要用户明确确认后再执行。
 
 校准中心顶部展示隐私与数据使用说明：项目只处理 Codex 语音输入链路中的文本，不监听键盘或鼠标，不记录普通手动输入，也不把语音校准记录挪作语音输入优化以外的用途。随后提供配置概览，帮助首次使用者理解持续学习、访问与启动、主动校准分别负责什么。
 
@@ -164,6 +164,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File ".\scripts\Invoke-VoiceFeedb
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File ".\scripts\Register-VoiceFeedbackDailyTask.ps1"
+```
+
+注册或检查随登录启动的校准中心入口：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File ".\scripts\Register-VoiceCalibrationStartupTask.ps1" -Action status
+powershell -NoProfile -ExecutionPolicy Bypass -File ".\scripts\Register-VoiceCalibrationStartupTask.ps1" -Action enable
 ```
 
 ## 当前能力边界

@@ -45,6 +45,7 @@ if ([string]::IsNullOrWhiteSpace($WebRoot)) {
 
 $projectRoot = (Resolve-Path -LiteralPath (Join-Path $scriptRoot '..')).Path
 $resolvedWebRoot = (Resolve-Path -LiteralPath $WebRoot).Path
+$startupTaskScript = Join-Path $scriptRoot 'Register-VoiceCalibrationStartupTask.ps1'
 
 if ([string]::IsNullOrWhiteSpace($SettingsPath)) {
     $SettingsPath = Join-Path $projectRoot 'config\voice-feedback-settings.json'
@@ -257,6 +258,61 @@ function Resolve-ProjectPath {
     }
 
     return (Join-Path $projectRoot $PathValue)
+}
+
+function Invoke-StartupTaskScript {
+    param(
+        [ValidateSet('status', 'enable', 'disable')]
+        [Parameter(Mandatory = $true)]
+        [string]$Action
+    )
+
+    if (-not (Test-Path -LiteralPath $startupTaskScript)) {
+        return [pscustomobject]@{
+            supported = $false
+            platform = if ($script:IsWindowsPlatform) { 'windows' } elseif ($script:IsMacOSPlatform) { 'macos' } else { 'unknown' }
+            taskName = 'Codex Voice Calibration Center Startup'
+            registered = $false
+            enabled = $false
+            state = 'script-missing'
+            message = 'Startup task script was not found.'
+        }
+    }
+
+    $output = & $startupTaskScript -Action $Action -Port $Port -WebRoot $resolvedWebRoot
+    $json = ($output | Out-String).Trim()
+    if ([string]::IsNullOrWhiteSpace($json)) {
+        throw 'Startup task script returned no status.'
+    }
+
+    return ($json | ConvertFrom-Json)
+}
+
+function Get-StartupTaskStatus {
+    try {
+        return Invoke-StartupTaskScript -Action 'status'
+    }
+    catch {
+        return [pscustomobject]@{
+            supported = $script:IsWindowsPlatform
+            platform = if ($script:IsWindowsPlatform) { 'windows' } elseif ($script:IsMacOSPlatform) { 'macos' } else { 'unknown' }
+            taskName = 'Codex Voice Calibration Center Startup'
+            registered = $false
+            enabled = $false
+            state = 'status-error'
+            message = $_.Exception.Message
+        }
+    }
+}
+
+function Set-StartupTaskEnabled {
+    param([Parameter(Mandatory = $true)][bool]$Enabled)
+
+    if ($Enabled) {
+        return Invoke-StartupTaskScript -Action 'enable'
+    }
+
+    return Invoke-StartupTaskScript -Action 'disable'
 }
 
 function Get-FeedbackStorageDir {
@@ -481,6 +537,35 @@ function Save-Settings {
     $Settings | ConvertTo-Json -Depth 10 | Set-Content -Encoding UTF8 -LiteralPath $SettingsPath
 }
 
+function Get-SettingsResponse {
+    param(
+        [Parameter(Mandatory = $true)]$Settings,
+        $StartupTaskStatus = $null
+    )
+
+    if ($null -eq $StartupTaskStatus) {
+        $StartupTaskStatus = Get-StartupTaskStatus
+    }
+
+    $fixedEntry = $Settings.fixedEntry
+    $autoStartWithCodex = [bool]$fixedEntry.autoStartWithCodex
+    if ($StartupTaskStatus.supported -and $StartupTaskStatus.PSObject.Properties.Item('enabled')) {
+        $autoStartWithCodex = [bool]$StartupTaskStatus.enabled
+    }
+
+    return [pscustomobject]@{
+        version = $Settings.version
+        feedbackLearning = $Settings.feedbackLearning
+        fixedEntry = [pscustomobject]@{
+            enabled = [bool]$fixedEntry.enabled
+            url = [string]$fixedEntry.url
+            autoStartWithCodex = $autoStartWithCodex
+            startupTask = $StartupTaskStatus
+        }
+        activeCalibration = $Settings.activeCalibration
+    }
+}
+
 function Get-ClampedInt {
     param(
         [object]$Value,
@@ -517,6 +602,8 @@ function Merge-Settings {
     $learning = $settings.feedbackLearning
     $fixedEntry = $settings.fixedEntry
     $activeCalibration = $settings.activeCalibration
+    $requestedAutoStartWithCodex = $null
+    $startupTaskStatus = $null
 
     if ($Incoming.feedbackLearning) {
         if ($null -ne $Incoming.feedbackLearning.enabled) {
@@ -551,7 +638,7 @@ function Merge-Settings {
         }
 
         if ($null -ne $Incoming.fixedEntry.autoStartWithCodex) {
-            $fixedEntry.autoStartWithCodex = [bool]$Incoming.fixedEntry.autoStartWithCodex
+            $requestedAutoStartWithCodex = [bool]$Incoming.fixedEntry.autoStartWithCodex
         }
     }
 
@@ -655,8 +742,24 @@ function Merge-Settings {
         }
     }
 
+    if ($null -ne $requestedAutoStartWithCodex) {
+        $startupTaskStatus = Set-StartupTaskEnabled -Enabled $requestedAutoStartWithCodex
+        $fixedEntry.autoStartWithCodex = if ($startupTaskStatus.supported -and $startupTaskStatus.PSObject.Properties.Item('enabled')) {
+            [bool]$startupTaskStatus.enabled
+        }
+        else {
+            $false
+        }
+    }
+    elseif ([bool]$fixedEntry.autoStartWithCodex) {
+        $startupTaskStatus = Get-StartupTaskStatus
+        if ($startupTaskStatus.supported -and $startupTaskStatus.PSObject.Properties.Item('enabled')) {
+            $fixedEntry.autoStartWithCodex = [bool]$startupTaskStatus.enabled
+        }
+    }
+
     Save-Settings -Settings $settings
-    return $settings
+    return Get-SettingsResponse -Settings $settings -StartupTaskStatus $startupTaskStatus
 }
 
 function Limit-Text {
@@ -2250,7 +2353,7 @@ try {
 
         if ($requestPath -eq 'api/features') {
             Send-JsonResponse -Response $context.Response -Value ([pscustomobject]@{
-                version = 10
+                version = 11
                 features = @(
                     'latest-codex-transcription',
                     'latest-codex-sent-text',
@@ -2265,7 +2368,8 @@ try {
                     'separate-save-and-rule-update',
                     'feedback-retention-cleanup',
                     'cross-platform-macos-clipboard',
-                    'platform-capabilities'
+                    'platform-capabilities',
+                    'startup-task-registration'
                 )
             })
             continue
@@ -2292,14 +2396,20 @@ try {
 
         if ($requestPath -eq 'api/settings') {
             if ($context.Request.HttpMethod -eq 'GET') {
-                Send-JsonResponse -Response $context.Response -Value (Read-Settings)
+                Send-JsonResponse -Response $context.Response -Value (Get-SettingsResponse -Settings (Read-Settings))
                 continue
             }
 
             if ($context.Request.HttpMethod -eq 'POST') {
-                $body = Read-RequestBody -Request $context.Request
-                $incoming = if ([string]::IsNullOrWhiteSpace($body)) { [pscustomobject]@{} } else { $body | ConvertFrom-Json }
-                Send-JsonResponse -Response $context.Response -Value (Merge-Settings -Incoming $incoming)
+                try {
+                    $body = Read-RequestBody -Request $context.Request
+                    $incoming = if ([string]::IsNullOrWhiteSpace($body)) { [pscustomobject]@{} } else { $body | ConvertFrom-Json }
+                    Send-JsonResponse -Response $context.Response -Value (Merge-Settings -Incoming $incoming)
+                }
+                catch {
+                    Send-JsonResponse -Response $context.Response -Value ([pscustomobject]@{ error = $_.Exception.Message }) -StatusCode 500
+                }
+
                 continue
             }
 

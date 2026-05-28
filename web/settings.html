@@ -651,7 +651,8 @@
       <div class="setting-row">
         <div>
           <h3>随 Codex 启动</h3>
-          <p>开启后，表示希望启动 Codex 时自动启动本地校准服务并打开固定配置网页。该选项仅保存偏好；真正注册启动任务前仍需用户确认。</p>
+          <p>开启后，会注册本机登录启动入口；重启并登录后自动拉起本地校准服务，Codex 打开时即可使用语音输入整理。</p>
+          <p id="startupTaskStatus" class="inline-status">正在检查启动任务状态。</p>
         </div>
         <label class="switch" aria-label="随 Codex 启动">
           <input id="autoStartWithCodex" type="checkbox">
@@ -860,6 +861,7 @@
     const fixedEntryEnabled = document.getElementById("fixedEntryEnabled");
     const fixedEntryUrl = document.getElementById("fixedEntryUrl");
     const autoStartWithCodex = document.getElementById("autoStartWithCodex");
+    const startupTaskStatus = document.getElementById("startupTaskStatus");
     const autoApplyEnabled = document.getElementById("autoApplyEnabled");
     const autoApplyPollMilliseconds = document.getElementById("autoApplyPollMilliseconds");
     const macOsBestEffortPasteEnabled = document.getElementById("macOsBestEffortPasteEnabled");
@@ -905,6 +907,7 @@
     let monitorBaselineCreatedAtMs = 0;
     let monitorStartedAtMs = 0;
     let monitorIsPolling = false;
+    let lastSavedAutoStartWithCodex = false;
     const monitorIntervalMs = 3000;
     const monitorTimeoutMs = 120000;
     let autoApplyTimer = null;
@@ -930,6 +933,52 @@
     function setAutoApplyState(text, className) {
       autoApplyState.textContent = text;
       autoApplyState.className = "inline-status " + (className || "");
+    }
+
+    function setStartupTaskStatus(text, className) {
+      startupTaskStatus.textContent = text;
+      startupTaskStatus.className = "inline-status " + (className || "");
+    }
+
+    function renderStartupTaskStatus(task) {
+      if (!task) {
+        setStartupTaskStatus("未读取到启动任务状态。", "warn");
+        return;
+      }
+
+      if (task.supported === false) {
+        setStartupTaskStatus("当前平台暂不支持自动注册启动任务；Windows 会使用任务计划程序。", "warn");
+        return;
+      }
+
+      if (task.state === "status-error" || task.state === "script-missing") {
+        setStartupTaskStatus(`启动任务状态检查失败：${task.message || "未知错误"}`, "warn");
+        return;
+      }
+
+      if (task.registered && task.enabled) {
+        const method = task.startupKind === "startup-folder-shortcut" ? "启动文件夹快捷方式" : "Windows 任务计划程序";
+        setStartupTaskStatus(`已注册：${method}，将在 Windows 登录后自动启动本地服务。`, "saved");
+        return;
+      }
+
+      setStartupTaskStatus("未注册：重启后需要手动打开本页或运行启动脚本。", "warn");
+    }
+
+    function confirmStartupTaskChange() {
+      if (autoStartWithCodex.checked === lastSavedAutoStartWithCodex) {
+        return true;
+      }
+
+      const action = autoStartWithCodex.checked ? "注册" : "移除";
+      const confirmed = window.confirm(`${action}本机登录启动入口？这会更新 Windows 登录启动配置；取消后不会更改当前注册状态。`);
+      if (confirmed) {
+        return true;
+      }
+
+      autoStartWithCodex.checked = lastSavedAutoStartWithCodex;
+      setStatus("已取消启动任务变更", "");
+      return false;
     }
 
     function setSendGuard(mode, title, text) {
@@ -1192,6 +1241,8 @@
       fixedEntryEnabled.checked = fixedEntry.enabled !== false;
       fixedEntryUrl.value = fixedEntry.url || "http://127.0.0.1:8793/";
       autoStartWithCodex.checked = Boolean(fixedEntry.autoStartWithCodex);
+      lastSavedAutoStartWithCodex = autoStartWithCodex.checked;
+      renderStartupTaskStatus(fixedEntry.startupTask);
       rewriteRule.value = activeCalibration.defaultRewriteRule || "";
       autoImportDelaySeconds.value = clampDelaySeconds(activeCalibration.autoImportDelaySeconds || 8);
       pasteDelaySeconds.value = clampPasteDelaySeconds(activeCalibration.pasteDelaySeconds ?? 0);
@@ -1266,6 +1317,9 @@
 
       const settings = await response.json();
       fixedEntryUrl.value = settings.fixedEntry?.url || "http://127.0.0.1:8793/";
+      autoStartWithCodex.checked = Boolean(settings.fixedEntry?.autoStartWithCodex);
+      lastSavedAutoStartWithCodex = autoStartWithCodex.checked;
+      renderStartupTaskStatus(settings.fixedEntry?.startupTask);
       syncAutoApplyFromSettings();
       setStatus("设置已保存", "saved");
     }
@@ -1926,6 +1980,19 @@
 
     feedbackEnabled.addEventListener("change", updateLearningControls);
 
+    autoStartWithCodex.addEventListener("change", () => {
+      if (!confirmStartupTaskChange()) {
+        return;
+      }
+
+      setStartupTaskStatus(autoStartWithCodex.checked ? "正在注册登录启动入口。" : "正在移除登录启动入口。", "");
+      saveSettings().catch(() => {
+        setStatus("启动任务保存失败", "warn");
+        setStartupTaskStatus("启动入口注册或移除失败，请确认任务计划程序可用。", "warn");
+        loadSettings().catch(() => {});
+      });
+    });
+
     autoApplyEnabled.addEventListener("change", () => {
       if (!autoApplyEnabled.checked) {
         stopAutoApply("自动应用已关闭。", "");
@@ -1979,6 +2046,10 @@
     });
 
     document.getElementById("save").addEventListener("click", () => {
+      if (!confirmStartupTaskChange()) {
+        return;
+      }
+
       saveSettings().catch(() => setStatus("保存失败", "warn"));
     });
 

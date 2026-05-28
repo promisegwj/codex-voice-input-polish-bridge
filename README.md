@@ -54,6 +54,7 @@ A local-first Windows and macOS bridge for people who use voice input with Codex
 - **Reviewable**: 提供本地校准网页，可以对照原始识别、自动整理和人工最终文本。
 - **Conservative learning**: 持续学习只生成本地候选，默认过滤单字、短英文、URL、线程链接、文件名和整句级改写。
 - **Safer defaults**: 持续学习、自动应用到输入框、macOS 实验自动粘贴、随 Codex 启动都默认关闭。
+- **Configurable startup**: 设置页可在用户确认后注册本机登录启动入口；Windows 优先使用任务计划程序，权限受限时退回到当前用户启动文件夹快捷方式。
 - **Cleanup built in**: 本地学习样本有保留天数、容量和单日条数限制。
 - **GitHub-ready**: 带发布清单、贡献指南、路线图、安全说明、issue/PR 模板和 Windows CI。
 
@@ -125,6 +126,13 @@ Then open:
 
 ```text
 http://127.0.0.1:8793/
+```
+
+Optional startup registration, after explicit user confirmation:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File ".\scripts\Register-VoiceCalibrationStartupTask.ps1" -Action status
+powershell -NoProfile -ExecutionPolicy Bypass -File ".\scripts\Register-VoiceCalibrationStartupTask.ps1" -Action enable
 ```
 
 ### Process Clipboard Text
