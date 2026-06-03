@@ -434,7 +434,7 @@ function Get-DefaultSettings {
             pasteDelaySeconds = 0
             autoApplyEnabled = $false
             autoApplyPollMilliseconds = 500
-            sentTextMonitorEnabled = $false
+            sentTextMonitorEnabled = $true
             sentTextMonitorDurationSeconds = 60
             sentTextMonitorPollSeconds = 3
             sentTextMonitorMinScore = 70
@@ -1281,6 +1281,95 @@ function Apply-GeneratedFeedbackProfile {
     }
 }
 
+function Get-AutoApplyHandledStatePath {
+    $settings = Read-Settings
+    $storageDir = if ($settings.feedbackLearning -and $settings.feedbackLearning.storageDir) {
+        [string]$settings.feedbackLearning.storageDir
+    }
+    else {
+        '.codex-tmp/voice-feedback'
+    }
+
+    $resolvedStorageDir = Resolve-ProjectPath $storageDir
+    if (-not (Test-Path -LiteralPath $resolvedStorageDir)) {
+        New-Item -ItemType Directory -Path $resolvedStorageDir | Out-Null
+    }
+
+    return (Join-Path $resolvedStorageDir 'auto-apply-handled.json')
+}
+
+function Read-AutoApplyHandledState {
+    $path = Get-AutoApplyHandledStatePath
+    if (-not (Test-Path -LiteralPath $path)) {
+        return [pscustomobject]@{
+            version = 1
+            handled = @()
+        }
+    }
+
+    try {
+        $state = Get-Content -Raw -Encoding UTF8 -LiteralPath $path | ConvertFrom-Json
+        if (-not $state.PSObject.Properties.Item('handled')) {
+            $state | Add-Member -MemberType NoteProperty -Name handled -Value @()
+        }
+
+        return $state
+    }
+    catch {
+        return [pscustomobject]@{
+            version = 1
+            handled = @()
+            readError = $_.Exception.Message
+        }
+    }
+}
+
+function Test-AutoApplyAlreadyHandled {
+    param([string]$TranscriptionId)
+
+    if ([string]::IsNullOrWhiteSpace($TranscriptionId)) {
+        return $false
+    }
+
+    $state = Read-AutoApplyHandledState
+    foreach ($entry in @($state.handled)) {
+        if ($entry.id -eq $TranscriptionId) {
+            return $true
+        }
+    }
+
+    return $false
+}
+
+function Add-AutoApplyHandledRecord {
+    param(
+        [string]$TranscriptionId,
+        [int64]$CreatedAtMs = 0,
+        [string]$Text = ''
+    )
+
+    if ([string]::IsNullOrWhiteSpace($TranscriptionId)) {
+        return
+    }
+
+    $path = Get-AutoApplyHandledStatePath
+    $state = Read-AutoApplyHandledState
+    $existing = @($state.handled | Where-Object { $_.id -ne $TranscriptionId })
+    $existing += [pscustomobject]@{
+        id = $TranscriptionId
+        createdAtMs = $CreatedAtMs
+        handledAt = (Get-Date).ToString('o')
+        textPreview = (Limit-Text -Value $Text -MaxLength 120)
+    }
+
+    $trimmed = @($existing | Sort-Object -Property @{ Expression = { if ($_.createdAtMs) { [int64]$_.createdAtMs } else { 0 } }; Descending = $true } | Select-Object -First 200)
+    [pscustomobject]@{
+        version = 1
+        updatedAt = (Get-Date).ToString('o')
+        handled = $trimmed
+    } | ConvertTo-Json -Depth 8 | Set-Content -Encoding UTF8 -LiteralPath $path
+}
+
 function Invoke-VoiceHotkey {
     param([bool]$DryRun = $false)
 
@@ -1966,6 +2055,22 @@ function Invoke-AutoApplyCodexTranscription {
     }
 
     $rawText = Limit-Text -Value $latest.text -MaxLength 4000
+    $transcriptionId = if ($latest.PSObject.Properties.Item('id')) { [string]$latest.id } else { '' }
+    if (Test-AutoApplyAlreadyHandled -TranscriptionId $transcriptionId) {
+        return [pscustomobject]@{
+            found = $true
+            applied = $false
+            reason = 'duplicate_transcription_already_auto_applied'
+            createdAtMs = $latest.createdAtMs
+            id = $transcriptionId
+            rawText = $rawText
+            polishedText = ''
+            finalText = ''
+            latest = $latest
+            source = 'codex_voice_auto_apply'
+        }
+    }
+
     if ([string]::IsNullOrWhiteSpace($rawText)) {
         return [pscustomobject]@{
             found = $true
@@ -1984,14 +2089,18 @@ function Invoke-AutoApplyCodexTranscription {
         $polishedText = Invoke-TextBridge -Text $rawText -RewriteRule $RewriteRule
         $profileResult = Apply-GeneratedFeedbackProfile -Text $polishedText
         $finalText = Limit-Text -Value $profileResult.text -MaxLength 4000
+        $returnedAt = (Get-Date).ToString('o')
         $applyResult = Apply-FinalText -Text $finalText -SendPaste $true -PasteDelaySeconds 0 -ReplaceExisting $true -UseCapturedTarget $true
+        if ([bool]$applyResult.copied) {
+            Add-AutoApplyHandledRecord -TranscriptionId $transcriptionId -CreatedAtMs ([int64]$latest.createdAtMs) -Text $rawText
+        }
 
         return [pscustomobject]@{
             found = $true
             applied = [bool]$applyResult.copied
             reason = if ([bool]$applyResult.copied) { 'ok' } else { if ($applyResult.PSObject.Properties.Item('reason')) { [string]$applyResult.reason } else { 'apply_failed' } }
             createdAtMs = $latest.createdAtMs
-            id = $latest.id
+            id = $transcriptionId
             rawText = $rawText
             polishedText = $finalText
             finalText = $finalText
@@ -2000,6 +2109,7 @@ function Invoke-AutoApplyCodexTranscription {
             profileCandidateCount = [int]$profileResult.candidatesSeen
             latest = $latest
             applyResult = $applyResult
+            returnedAt = $returnedAt
             source = 'codex_voice_auto_apply'
         }
     }

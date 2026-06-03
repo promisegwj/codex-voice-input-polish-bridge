@@ -546,7 +546,7 @@
         </div>
         <div class="overview-item">
           <h3>访问与启动</h3>
-          <p>固定配置网页地址，并保存是否随 Codex 启动校准服务的偏好。</p>
+          <p>固定配置网页地址，并保存是否在检测到 Codex 启动后拉起校准服务的偏好。</p>
         </div>
         <div class="overview-item">
           <h3>自动应用</h3>
@@ -651,7 +651,7 @@
       <div class="setting-row">
         <div>
           <h3>随 Codex 启动</h3>
-          <p>开启后，会注册本机登录启动入口；重启并登录后自动拉起本地校准服务，Codex 打开时即可使用语音输入整理。</p>
+          <p>开启后，会注册本机登录启动的轻量监听器；检测到 Codex.exe 运行时自动拉起本地校准服务。</p>
           <p id="startupTaskStatus" class="inline-status">正在检查启动任务状态。</p>
         </div>
         <label class="switch" aria-label="随 Codex 启动">
@@ -685,11 +685,11 @@
 
           <div class="primary-flow">
             <h3>自动应用模式</h3>
-            <p>开启后，本页会持续读取新的 Codex 语音历史；发现新语音后自动整理、写入剪贴板，并在当前平台允许时尝试回填。</p>
+            <p>开启后，本页和后台监听器会持续读取新的 Codex 语音历史；发现新语音后自动整理、写入剪贴板，并在当前平台允许时尝试回填。</p>
             <div class="setting-row">
               <div>
                 <h3>自动应用到输入框</h3>
-                <p>只处理 Codex 语音历史，不读取普通手动输入；如果无法确认回填目标，会保留整理文本到剪贴板。macOS 自动粘贴需要辅助功能/自动化权限，默认关闭。</p>
+                <p>只处理 Codex 语音历史，不读取普通手动输入；校准网页关闭时也会由后台监听器触发。如果无法确认回填目标，会保留整理文本到剪贴板。macOS 自动粘贴需要辅助功能/自动化权限，默认关闭。</p>
               </div>
               <label class="switch" aria-label="自动应用到输入框">
                 <input id="autoApplyEnabled" type="checkbox">
@@ -907,7 +907,6 @@
     let monitorBaselineCreatedAtMs = 0;
     let monitorStartedAtMs = 0;
     let monitorIsPolling = false;
-    let lastSavedAutoStartWithCodex = false;
     const monitorIntervalMs = 3000;
     const monitorTimeoutMs = 120000;
     let autoApplyTimer = null;
@@ -958,27 +957,12 @@
 
       if (task.registered && task.enabled) {
         const method = task.startupKind === "startup-folder-shortcut" ? "启动文件夹快捷方式" : "Windows 任务计划程序";
-        setStartupTaskStatus(`已注册：${method}，将在 Windows 登录后自动启动本地服务。`, "saved");
+        const mode = task.startupMode === "legacy-direct-service-start" ? "旧版登录即启动服务" : "Codex 进程监听器";
+        setStartupTaskStatus(`已注册：${method}，模式为${mode}；检测到 Codex.exe 后会自动启动本地服务。`, "saved");
         return;
       }
 
       setStartupTaskStatus("未注册：重启后需要手动打开本页或运行启动脚本。", "warn");
-    }
-
-    function confirmStartupTaskChange() {
-      if (autoStartWithCodex.checked === lastSavedAutoStartWithCodex) {
-        return true;
-      }
-
-      const action = autoStartWithCodex.checked ? "注册" : "移除";
-      const confirmed = window.confirm(`${action}本机登录启动入口？这会更新 Windows 登录启动配置；取消后不会更改当前注册状态。`);
-      if (confirmed) {
-        return true;
-      }
-
-      autoStartWithCodex.checked = lastSavedAutoStartWithCodex;
-      setStatus("已取消启动任务变更", "");
-      return false;
     }
 
     function setSendGuard(mode, title, text) {
@@ -1241,7 +1225,6 @@
       fixedEntryEnabled.checked = fixedEntry.enabled !== false;
       fixedEntryUrl.value = fixedEntry.url || "http://127.0.0.1:8793/";
       autoStartWithCodex.checked = Boolean(fixedEntry.autoStartWithCodex);
-      lastSavedAutoStartWithCodex = autoStartWithCodex.checked;
       renderStartupTaskStatus(fixedEntry.startupTask);
       rewriteRule.value = activeCalibration.defaultRewriteRule || "";
       autoImportDelaySeconds.value = clampDelaySeconds(activeCalibration.autoImportDelaySeconds || 8);
@@ -1318,7 +1301,6 @@
       const settings = await response.json();
       fixedEntryUrl.value = settings.fixedEntry?.url || "http://127.0.0.1:8793/";
       autoStartWithCodex.checked = Boolean(settings.fixedEntry?.autoStartWithCodex);
-      lastSavedAutoStartWithCodex = autoStartWithCodex.checked;
       renderStartupTaskStatus(settings.fixedEntry?.startupTask);
       syncAutoApplyFromSettings();
       setStatus("设置已保存", "saved");
@@ -1981,14 +1963,10 @@
     feedbackEnabled.addEventListener("change", updateLearningControls);
 
     autoStartWithCodex.addEventListener("change", () => {
-      if (!confirmStartupTaskChange()) {
-        return;
-      }
-
-      setStartupTaskStatus(autoStartWithCodex.checked ? "正在注册登录启动入口。" : "正在移除登录启动入口。", "");
+      setStartupTaskStatus(autoStartWithCodex.checked ? "正在注册 Codex 启动监听器。" : "正在移除 Codex 启动监听器。", "");
       saveSettings().catch(() => {
         setStatus("启动任务保存失败", "warn");
-        setStartupTaskStatus("启动入口注册或移除失败，请确认任务计划程序可用。", "warn");
+        setStartupTaskStatus("启动监听器注册或移除失败，请确认任务计划程序或启动文件夹可用。", "warn");
         loadSettings().catch(() => {});
       });
     });
@@ -2046,10 +2024,6 @@
     });
 
     document.getElementById("save").addEventListener("click", () => {
-      if (!confirmStartupTaskChange()) {
-        return;
-      }
-
       saveSettings().catch(() => setStatus("保存失败", "warn"));
     });
 

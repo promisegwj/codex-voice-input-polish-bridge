@@ -21,6 +21,8 @@ if (-not $isWindowsPlatform) {
         registered = $false
         enabled = $false
         state = 'unsupported'
+        startupMode = 'unsupported'
+        watchedProcess = 'Codex.exe'
         message = 'Startup registration is currently implemented for Windows sign-in only.'
     } | ConvertTo-Json -Depth 5
     return
@@ -34,16 +36,16 @@ else {
 }
 
 $projectRoot = (Resolve-Path -LiteralPath (Join-Path $scriptRoot '..')).Path
-$openScript = (Resolve-Path -LiteralPath (Join-Path $scriptRoot 'Open-VoiceCalibrationCenter.ps1')).Path
+$watcherScript = (Resolve-Path -LiteralPath (Join-Path $scriptRoot 'Start-CodexVoiceCalibrationWatcher.ps1')).Path
 $startupFolder = [Environment]::GetFolderPath([Environment+SpecialFolder]::Startup)
 $shortcutPath = Join-Path $startupFolder "$TaskName.lnk"
 
-function Get-OpenScriptArguments {
+function Get-StartupProcessArguments {
     $arguments = @(
         '-NoProfile',
         '-ExecutionPolicy', 'Bypass',
         '-WindowStyle', 'Hidden',
-        '-File', "`"$openScript`"",
+        '-File', "`"$watcherScript`"",
         '-Port', $Port
     )
 
@@ -68,10 +70,10 @@ function New-StartupShortcut {
     $shell = New-Object -ComObject WScript.Shell
     $shortcut = $shell.CreateShortcut($shortcutPath)
     $shortcut.TargetPath = $powerShellPath
-    $shortcut.Arguments = (Get-OpenScriptArguments) -join ' '
+    $shortcut.Arguments = (Get-StartupProcessArguments) -join ' '
     $shortcut.WorkingDirectory = $projectRoot
     $shortcut.WindowStyle = 7
-    $shortcut.Description = 'Start the local Codex voice calibration center after Windows sign-in.'
+    $shortcut.Description = 'Watch for Codex and start the local voice calibration center.'
     $shortcut.Save()
 }
 
@@ -81,11 +83,71 @@ function Remove-StartupShortcut {
     }
 }
 
+function Start-StartupProcessBestEffort {
+    $powerShellPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    if (-not (Test-Path -LiteralPath $powerShellPath)) {
+        $powerShellPath = 'powershell.exe'
+    }
+
+    try {
+        Start-Process `
+            -FilePath $powerShellPath `
+            -WindowStyle Hidden `
+            -ArgumentList ((Get-StartupProcessArguments) -join ' ') `
+            -WorkingDirectory $projectRoot | Out-Null
+    }
+    catch {
+        # Registration can still be valid even if the immediate best-effort start fails.
+    }
+}
+
 function Get-StartupTaskStatus {
     param(
         [Parameter(Mandatory = $true)][string]$Name,
         [string]$Message = ''
     )
+
+    $hasShortcut = Test-Path -LiteralPath $shortcutPath
+    $shortcutStartupMode = ''
+    if ($hasShortcut) {
+        try {
+            $shell = New-Object -ComObject WScript.Shell
+            $shortcut = $shell.CreateShortcut($shortcutPath)
+            $shortcutStartupMode = if ($shortcut.Arguments -match [regex]::Escape([System.IO.Path]::GetFileName($watcherScript))) {
+                'codex-process-watcher'
+            }
+            else {
+                'legacy-direct-service-start'
+            }
+        }
+        catch {
+            $shortcutStartupMode = 'unknown'
+        }
+    }
+
+    if ($hasShortcut) {
+        $defaultShortcutMessage = if ($shortcutStartupMode -eq 'codex-process-watcher') {
+            'Codex process watcher shortcut is registered.'
+        }
+        else {
+            'Legacy startup shortcut is registered; enable again to migrate to the Codex process watcher.'
+        }
+
+        return [pscustomobject]@{
+            supported = $true
+            platform = 'windows'
+            taskName = $Name
+            registered = $true
+            enabled = $true
+            state = 'startup-shortcut'
+            trigger = 'StartupFolder'
+            startupKind = 'startup-folder-shortcut'
+            startupMode = $shortcutStartupMode
+            watchedProcess = 'Codex.exe'
+            shortcutPath = $shortcutPath
+            message = if ([string]::IsNullOrWhiteSpace($Message)) { $defaultShortcutMessage } else { $Message }
+        }
+    }
 
     $task = $null
     try {
@@ -95,23 +157,7 @@ function Get-StartupTaskStatus {
         $task = $null
     }
 
-    $hasShortcut = Test-Path -LiteralPath $shortcutPath
     if ($null -eq $task) {
-        if ($hasShortcut) {
-            return [pscustomobject]@{
-                supported = $true
-                platform = 'windows'
-                taskName = $Name
-                registered = $true
-                enabled = $true
-                state = 'startup-shortcut'
-                trigger = 'StartupFolder'
-                startupKind = 'startup-folder-shortcut'
-                shortcutPath = $shortcutPath
-                message = if ([string]::IsNullOrWhiteSpace($Message)) { 'Startup folder shortcut is registered.' } else { $Message }
-            }
-        }
-
         return [pscustomobject]@{
             supported = $true
             platform = 'windows'
@@ -121,6 +167,8 @@ function Get-StartupTaskStatus {
             state = 'not-registered'
             trigger = 'AtLogOn'
             startupKind = 'none'
+            startupMode = 'none'
+            watchedProcess = 'Codex.exe'
             message = if ([string]::IsNullOrWhiteSpace($Message)) { 'Startup task is not registered.' } else { $Message }
         }
     }
@@ -139,6 +187,27 @@ function Get-StartupTaskStatus {
         $enabled = [bool]$task.Settings.Enabled
     }
 
+    $taskStartupMode = 'unknown'
+    try {
+        $taskArguments = @($task.Actions | ForEach-Object { $_.Arguments }) -join ' '
+        $taskStartupMode = if ($taskArguments -match [regex]::Escape([System.IO.Path]::GetFileName($watcherScript))) {
+            'codex-process-watcher'
+        }
+        else {
+            'legacy-direct-service-start'
+        }
+    }
+    catch {
+        $taskStartupMode = 'unknown'
+    }
+
+    $defaultTaskMessage = if ($taskStartupMode -eq 'codex-process-watcher') {
+        'Codex process watcher task is registered.'
+    }
+    else {
+        'Legacy startup task is registered; enable again to migrate to the Codex process watcher.'
+    }
+
     return [pscustomobject]@{
         supported = $true
         platform = 'windows'
@@ -148,10 +217,12 @@ function Get-StartupTaskStatus {
         state = $state
         trigger = 'AtLogOn'
         startupKind = 'scheduled-task'
+        startupMode = $taskStartupMode
+        watchedProcess = 'Codex.exe'
         shortcutPath = if ($hasShortcut) { $shortcutPath } else { '' }
         lastRunTime = if ($info) { $info.LastRunTime.ToString('o') } else { '' }
         nextRunTime = if ($info) { $info.NextRunTime.ToString('o') } else { '' }
-        message = if ([string]::IsNullOrWhiteSpace($Message)) { 'Startup task is registered.' } else { $Message }
+        message = if ([string]::IsNullOrWhiteSpace($Message)) { $defaultTaskMessage } else { $Message }
     }
 }
 
@@ -159,7 +230,7 @@ if ($Action -eq 'enable') {
     try {
         $actionDefinition = New-ScheduledTaskAction `
             -Execute 'powershell.exe' `
-            -Argument ((Get-OpenScriptArguments) -join ' ') `
+            -Argument ((Get-StartupProcessArguments) -join ' ') `
             -WorkingDirectory $projectRoot
         $trigger = New-ScheduledTaskTrigger -AtLogOn
         $settings = New-ScheduledTaskSettingsSet `
@@ -172,7 +243,7 @@ if ($Action -eq 'enable') {
             -Action $actionDefinition `
             -Trigger $trigger `
             -Settings $settings `
-            -Description 'Start the local Codex voice calibration center after Windows sign-in.' `
+            -Description 'Watch for Codex and start the local voice calibration center.' `
             -Force | Out-Null
 
         Remove-StartupShortcut
@@ -182,14 +253,16 @@ if ($Action -eq 'enable') {
         }
         catch {
             # The task is registered; starting it immediately is a best-effort convenience.
+            Start-StartupProcessBestEffort
         }
 
-        Get-StartupTaskStatus -Name $TaskName -Message 'Startup task is registered and will run at Windows sign-in.' |
+        Get-StartupTaskStatus -Name $TaskName -Message 'Codex process watcher is registered and will run at Windows sign-in.' |
             ConvertTo-Json -Depth 5
     }
     catch {
         New-StartupShortcut
-        Get-StartupTaskStatus -Name $TaskName -Message "Task Scheduler registration was blocked; startup folder shortcut was created instead. $($_.Exception.Message)" |
+        Start-StartupProcessBestEffort
+        Get-StartupTaskStatus -Name $TaskName -Message "Task Scheduler registration was blocked; startup folder watcher shortcut was created instead. $($_.Exception.Message)" |
             ConvertTo-Json -Depth 5
     }
 
